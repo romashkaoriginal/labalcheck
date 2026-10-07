@@ -1,0 +1,12 @@
+import { build } from 'esbuild';
+import { cpSync, mkdirSync, existsSync } from 'node:fs';
+mkdirSync('dist',{recursive:true});
+for(const file of ['index.html','styles.css','readability.css','area-editor.css','favicon.svg']) cpSync('src/'+file,'dist/'+file);
+cpSync('assets','dist/assets',{recursive:true});
+mkdirSync('dist/vendor',{recursive:true});
+cpSync('node_modules/pdfjs-dist/build/pdf.worker.min.mjs','dist/vendor/pdf.worker.min.mjs');
+cpSync('node_modules/tesseract.js/dist/worker.min.js','dist/vendor/worker.min.js');
+cpSync('node_modules/tesseract.js-core','dist/vendor/core',{recursive:true});
+cpSync('node_modules/pdfjs-dist/cmaps','dist/vendor/cmaps',{recursive:true});
+await build({entryPoints:['src/app.js'],bundle:true,format:'esm',outfile:'dist/app.js',minify:true,target:'es2022'});
+console.log('Site built: dist');
