@@ -1,14 +1,15 @@
 export function normalize(s){return String(s).toLowerCase().replace(/ё/g,'е').replace(/[«»“”"'‘’]/g,'').replace(/[º°]/g,'°').replace(/[–—−]/g,'-').replace(/\s+/g,' ').replace(/\s*([,.:;%/()-])\s*/g,'$1').trim();}
-export function compact(s){return normalize(s).replace(/(\d)[,.](?=\d)/g,'$1¤').replace(/-(?=\d)/g,'§').replace(/[^\p{L}\p{N}¤§]/gu,'');}
+export function compact(s){return normalize(s).replace(/(\d)[,.](?=\d)/g,'$1¤').replace(/-(?=\d)/g,'§').replace(/[^\p{L}\p{N}¤§%°]/gu,'');}
+export function dehyphenate(s){return String(s).replace(/(\p{L})-\s*(?:[<>|{}\[\]]+\s*)?(\p{L})/gu,'$1$2');}
+export function words(s){return (normalize(dehyphenate(s)).match(/-?\d+(?:[,.]\d+)?|[\p{L}]+|[%°]/gu)||[]).map(t=>/^\d+\.\d+$/.test(t)?t.replace('.',','):t).filter(t=>t.length>1||/^[%°лг]$/.test(t));}
 export function compareText(expected,actual){
-  const e=compact(expected),a=compact(actual);
+  const e=compact(dehyphenate(expected)),a=compact(dehyphenate(actual));
   if(!e)return {status:'manual',coverage:0};
   if(a.includes(e))return {status:'found',coverage:100};
-  const tokens=normalize(expected).match(/[\p{L}\p{N}]{2,}/gu)||[];
-  const actualWords=new Set(normalize(actual).match(/[\p{L}\p{N}]{2,}/gu)||[]);
-  const coverage=tokens.length?Math.round(tokens.filter(t=>actualWords.has(t)).length/tokens.length*100):0;
+  const tokens=words(expected),actualWords=new Set(words(actual));
   const missing=[...new Set(tokens.filter(t=>!actualWords.has(t)))];
-  return {status:coverage>=75?'review':'missing',coverage,missing};
+  const coverage=tokens.length?Math.round(tokens.filter(t=>actualWords.has(t)).length/tokens.length*100):0;
+  return {status:coverage===100?'all_words':coverage>0?'partial':'unreadable',coverage,missing};
 }
 export function requirementsFromSource(source){
  let rules=[];
@@ -41,9 +42,12 @@ export function evaluate(rules,actual,{volume='0,7',margin=false,review={},autom
   const dimensions=dimensionChecks(rule,margin).map((x,i)=>{const manual=Number.isFinite(state.dimensions?.[i]),value=manual?state.dimensions[i]:automatic[rule.id]?.dimensions?.[i];return {...x,value,estimated:!manual&&Number.isFinite(value),pass:Number.isFinite(value)&&value>=x.min};});
   const textConfirmed=state.textConfirmed===true;
   const failed=state.rejected===true||dimensions.some(x=>!x.estimated&&Number.isFinite(x.value)&&!x.pass);
-  const complete=textConfirmed&&dimensions.every(x=>x.pass)&&(!rule.constraint||state.constraintsConfirmed)&&(!/окно.*дат/i.test(rule.title)||state.windowConfirmed);
+  const complete=textConfirmed&&dimensions.every(x=>x.pass&&!x.estimated)&&(!rule.constraint||state.constraintsConfirmed)&&(!/окно.*дат/i.test(rule.title)||state.windowConfirmed);
   const exempt=!expected.trim()&&state.notApplicable&&state.note?.trim();
-  return {...rule,expected,comparison,dimensions,state,status:failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':dimensions.some(x=>x.estimated&&!x.pass)||actual&&['missing','review'].includes(comparison.status)?'issue':automatic[rule.id]?.exact?'detected':'pending'};
+  if(automatic[rule.id]?.exact)comparison={...comparison,status:'found',coverage:100,missing:[]};
+  else if(automatic[rule.id]?.distributed&&comparison.status==='found')comparison={...comparison,status:'all_words',coverage:100,missing:[]};
+  const status=failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':dimensions.some(x=>x.estimated&&!x.pass)?'issue':comparison.status==='found'?'detected':comparison.status==='all_words'?'words':actual&&['partial','unreadable'].includes(comparison.status)?'issue':'pending';
+  return {...rule,expected,comparison,dimensions,state,status};
  });
 }
 export function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));}

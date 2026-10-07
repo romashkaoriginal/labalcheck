@@ -1,4 +1,4 @@
-import {compact, compareText, variantText, dimensionChecks} from './engine.js';
+import {compact, compareText, dehyphenate, words as textWords, variantText, dimensionChecks} from './engine.js';
 
 // Detect dashed magenta die-cut contours, not the enlarged annotations on a proof.
 // When no closed contour is supported by pixels, keep the whole page.
@@ -27,6 +27,17 @@ export function detectFrames({data,width,height}) {
   }
   // Inner fold lines must not turn one label into several partial candidates.
   return frames.filter(a=>!frames.some(b=>b!==a&&a.x>=b.x-.003&&a.y>=b.y-.003&&a.x+a.w<=b.x+b.w+.003&&a.y+a.h<=b.y+b.h+.003&&b.w*b.h>a.w*a.h*1.12)).slice(0,8);
+}
+
+export function detectArtworkRegion({data,width,height}) {
+  // Printing protocols usually sit below a long horizontal divider. Scan
+  // everything above it, including detached artwork and barcode panels.
+  const widthOfLine=y=>{let run=0,longest=0;for(let x=0;x<width;x++){const i=(y*width+x)*4,ink=Math.max(data[i],data[i+1],data[i+2])<145;run=ink?run+1:0;longest=Math.max(longest,run);}return longest;};
+  for(let y=Math.floor(height*.55);y<height*.92;y++){
+    if(widthOfLine(y)<=width*.43)continue;
+    let more=0,last=-4;for(let yy=y+4;yy<Math.min(height,y+height*.16);yy++)if(yy-last>3&&widthOfLine(yy)>width*.23){more++;last=yy;if(more>=2)return {x:0,y:0,w:1,h:Math.max(.5,(y-3)/height)};}
+  }
+  return {x:0,y:0,w:1,h:1};
 }
 
 export function mapBox(box,region,width,height,rotation=0) {
@@ -72,11 +83,12 @@ export function wordsFromOcr(data,region,width,height,rotation,mmPerPixel) {
 }
 
 export function locateText(expected,words) {
-  const target=compact(expected);if(!target||target==='-')return null;
+  const target=compact(dehyphenate(expected));if(!target||target==='-')return null;
+  const distributed=part=>{const b=part.map(w=>w.box).filter(Boolean);return b.length>1&&(Math.max(...b.map(v=>v.x+v.w))-Math.min(...b.map(v=>v.x))>.55||Math.max(...b.map(v=>v.y+v.h))-Math.min(...b.map(v=>v.y))>.55);};
   let text='',offsets=[];
   for(const w of words){offsets.push(text.length);text+=compact(w.text);}
   const index=text.indexOf(target);
-  if(index>=0){const selected=words.filter((w,i)=>offsets[i]<index+target.length&&offsets[i]+compact(w.text).length>index);return {words:selected,exact:true,coverage:100};}
+  if(index>=0){const selected=words.filter((w,i)=>offsets[i]<index+target.length&&offsets[i]+compact(w.text).length>index);const apart=distributed(selected);return {words:selected,exact:!apart,distributed:apart,coverage:100};}
   const tokens=expected.split(/\s+/).filter(Boolean),size=tokens.length;
   if(size<3)return null;
   let best=null;
@@ -88,7 +100,13 @@ export function locateText(expected,words) {
       if(result.coverage>=65&&(!best||result.coverage>best.coverage))best={words:part,exact:false,coverage:result.coverage};
     }
   }
-  return best;
+  if(best?.coverage===100)return {...best,distributed:distributed(best.words)};
+  // The same requirement may span separate panels. Keep coordinates for each
+  // recognized word rather than forcing everything into one text rectangle.
+  const wanted=textWords(expected),used=new Set(),selected=[];
+  for(const token of wanted){const i=words.findIndex((w,index)=>!used.has(index)&&textWords(w.text).includes(token));if(i>=0){used.add(i);selected.push(words[i]);}}
+  const coverage=wanted.length?Math.round(selected.length/wanted.length*100):0;
+  return coverage>(best?.coverage||0)?{words:selected,exact:false,distributed:true,coverage}:best;
 }
 
 export function matchRequirements(rules,words,volume,margin,label,hasContour) {
@@ -97,7 +115,7 @@ export function matchRequirements(rules,words,volume,margin,label,hasContour) {
     if(!match||/знаки|мебиус|рюмка/i.test(rule.title))return [rule.id,null];
     const boxes=match.words.map(w=>w.box);
     const dimensions=dimensionChecks(rule,margin).map(d=>{
-      if(!match.exact)return null;
+      if(!match.exact||!label||!hasContour||boxes.some(b=>b.x<label.x-.003||b.y<label.y-.003||b.x+b.w>label.x+label.w+.003||b.y+b.h>label.y+label.h+.003))return null;
       if(d.unit==='%'){
         if(!hasContour)return null;
         const x=Math.min(...boxes.map(b=>b.x)),y=Math.min(...boxes.map(b=>b.y)),right=Math.max(...boxes.map(b=>b.x+b.w)),bottom=Math.max(...boxes.map(b=>b.y+b.h));

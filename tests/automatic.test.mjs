@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {detectFrames,segmentInk,mapBox,locateText,matchRequirements} from '../src/automatic.js';
+import {detectFrames,detectArtworkRegion,segmentInk,mapBox,locateText,matchRequirements} from '../src/automatic.js';
 import {evaluate} from '../src/engine.js';
 
 test('separate die-cut frames are not merged across the gutter',()=>{
@@ -11,6 +11,11 @@ test('separate die-cut frames are not merged across the gutter',()=>{
 });
 test('blank and unframed pages do not claim a die-cut boundary',()=>{
  assert.deepEqual(detectFrames({data:new Uint8ClampedArray(100*100*4).fill(255),width:100,height:100}),[]);
+});
+test('artwork scan includes detached panels and skips a printing protocol',()=>{
+ const width=400,height=400,data=new Uint8ClampedArray(width*height*4).fill(255);
+ for(const y of [290,320,350])for(let x=30;x<360;x++){const i=(y*width+x)*4;data[i]=data[i+1]=data[i+2]=0;}
+ const region=detectArtworkRegion({data,width,height});assert.ok(region.h>.7&&region.h<.75);
 });
 test('ink segmentation isolates adjacent text columns without user coordinates',()=>{
  const width=200,height=300,data=new Uint8ClampedArray(width*height*4).fill(255);
@@ -25,6 +30,10 @@ test('quarter-turn OCR boxes map back to original page coordinates',()=>{
 const words=['Крепость','40','%'].map((text,i)=>({text,confidence:95,box:{x:.1+i*.1,y:.2,w:.1,h:.1},glyphs:[...text].map(text=>({text,height:2.1}))}));
 test('locate text returns word coordinates and rejects changed numeric values',()=>{
  assert.equal(locateText('Крепость 40%',words).exact,true);assert.equal(locateText('Крепость 45%',words),null);
+});
+test('finds words spread across different areas without inventing an exact phrase',()=>{
+ const mixed=[{text:'40',box:{x:.8,y:.6,w:.04,h:.04}},{text:'Состав',box:{x:.1,y:.1,w:.1,h:.02}},{text:'%',box:{x:.9,y:.6,w:.02,h:.04}},{text:'крепость',box:{x:.7,y:.6,w:.1,h:.04}}];
+ const match=locateText('Состав крепость 40%',mixed);assert.equal(match.exact,false);assert.equal(match.distributed,true);assert.equal(match.coverage,100);assert.equal(match.words.length,4);
 });
 test('automatic measurements carry uncertainty and cannot approve a requirement alone',()=>{
  const rules=[{id:'r0',title:'Крепость',text:'Крепость 40%',original:'Крепость 40%',constraint:'не менее 2 мм'}];
