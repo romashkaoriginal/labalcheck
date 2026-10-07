@@ -1,5 +1,6 @@
 import {variantText, dimensionChecks} from './engine.js';
 import {locatePhrase,orderedTextCandidates} from './phrase.js';
+import {isQuantityRule,quantityEvidence,dateEvidence,glyphHeight,insideLabel} from './quantity.js';
 
 // Detect dashed magenta die-cut contours, not the enlarged annotations on a proof.
 // When no closed contour is supported by pixels, keep the whole page.
@@ -76,12 +77,20 @@ export function segmentInk({data,width,height},region) {
   split({x:0,y:0,w:width,h:height},0);return parts.length>1?parts:[];
 }
 
-export function wordsFromOcr(data,region,width,height,rotation,mmPerPixel,pass='ocr') {
+function visibleHeight(bbox,pixels){
+ const {data,width,height}=pixels,x0=Math.max(0,Math.floor(bbox.x0)),x1=Math.min(width,Math.ceil(bbox.x1)),y0=Math.max(0,Math.floor(bbox.y0)),y1=Math.min(height,Math.ceil(bbox.y1));
+ let start=-1,last=-1,longest=0;
+ for(let y=y0;y<y1;y++){let count=0;for(let x=x0;x<x1;x++){const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2];if(Math.max(r,g,b)<150&&Math.max(r,g,b)-Math.min(r,g,b)<75)count++;}
+  if(count>=Math.max(1,(x1-x0)*.025)){if(start<0||y-last>2){if(start>=0)longest=Math.max(longest,last-start+1);start=y;}last=y;}
+ }
+ if(start>=0)longest=Math.max(longest,last-start+1);return longest||null;
+}
+export function wordsFromOcr(data,region,width,height,rotation,mmPerPixel,pass='ocr',pixels=null) {
   return (data.blocks||[]).flatMap((b,bi)=>(b.paragraphs||[]).flatMap((p,pi)=>(p.lines||[]).flatMap((l,li)=>(l.words||[]).filter(w=>w.text?.trim()).map(w=>({
     text:w.text,confidence:w.confidence,box:mapBox(w.bbox,region,width,height,rotation),rotation,pass,
     readingBox:{x:w.bbox.x0,y:w.bbox.y0,w:w.bbox.x1-w.bbox.x0,h:w.bbox.y1-w.bbox.y0},
     line:`${bi}:${pi}:${li}`,pageAspect:width*region.h/(height*region.w),
-    glyphs:(w.symbols||[]).filter(s=>/[\p{L}\p{N}]/u.test(s.text)&&s.confidence>=80).map(s=>({text:s.text,height:mmPerPixel?(s.bbox.y1-s.bbox.y0)*mmPerPixel:null})),
+    glyphs:(w.symbols||[]).filter(s=>/[\p{L}\p{N}]/u.test(s.text)&&s.confidence>=80).map(s=>({text:s.text,height:mmPerPixel?(pixels?visibleHeight(s.bbox,pixels):s.bbox.y1-s.bbox.y0)*mmPerPixel:null})),
   })))));
 }
 
@@ -90,21 +99,47 @@ export function locateText(expected,words){return locatePhrase(expected,words);}
 export function matchRequirements(rules,words,volume,margin,label,hasContour) {
   const candidates=orderedTextCandidates(words);
   return Object.fromEntries(rules.map(rule=>{
-    const expected=variantText(rule,volume),match=locatePhrase(expected,words,candidates,label);
-    if(!match||/знаки|мебиус|рюмка/i.test(rule.title))return [rule.id,null];
+    const expected=variantText(rule,volume);let match=locatePhrase(expected,words,candidates,label);
+    if(/знаки|мебиус|рюмка/i.test(rule.title))return [rule.id,null];
+    const quantity=isQuantityRule(rule)?quantityEvidence(rule,expected,words,candidates,label,hasContour):null;
+    const caption=quantity?locatePhrase(rule.title,words,candidates,label):null;
+    if(quantity&&caption?.exact&&quantity.status==='match'){
+      const found=[...new Set([...caption.words,...quantity.words])];
+      match={words:found,exact:true,distributed:false,coverage:100,method:'quantity',recognizedText:caption.recognizedText+' · '+quantity.actual.text,diff:[]};
+    }
+    if(!match&&!quantity)return [rule.id,null];
+    match??={words:quantity.words,exact:false,distributed:true,coverage:0};
+    const date=/окно.*дат/i.test(rule.title)?dateEvidence(match,words,label,hasContour):null;
     const boxes=match.words.map(w=>w.box);
+    const measurementNotes=[];
     const dimensions=dimensionChecks(rule,margin).map(d=>{
+      const note=text=>{measurementNotes.push(text);return null;};
+      if(['quantity','quantity_label','date_label','date_digits'].includes(d.target)){
+        if(!hasContour||!label)return note('Контур этикетки не определён: печатный участок нельзя отделить от технических образцов.');
+        let value=null;
+        if(d.target==='quantity_label')value=caption?.exact&&caption.words.every(w=>insideLabel(w.box,label))?glyphHeight(caption.words,/\p{L}/u):null;
+        if(d.target==='quantity'){
+          if(quantity?.status==='ambiguous')return note('Несколько разных чтений количества. Нужна сверка по макету.');
+          if(Number.isFinite(quantity?.numberHeight)&&Number.isFinite(quantity?.unitHeight))value=Math.min(quantity.numberHeight,quantity.unitHeight);
+          else return note('Для количества нужны надёжные размеры и цифр, и единицы. Перечитайте макет или загрузите PDF в масштабе 1:1.');
+        }
+        if(d.target==='date_label')value=match.exact&&match.words.every(w=>insideLabel(w.box,label))?glyphHeight(match.words,/\p{L}/u):null;
+        if(d.target==='date_digits'){value=date?.numberHeight;if(!Number.isFinite(value))return note(date?.reason||'Цифры не удалось измерить. Нужен образец печати с датой / партией.');}
+        if(!Number.isFinite(value))return note('Нет надёжных размеров видимых символов. Для замера нужен PDF с физическим масштабом.');
+        measurementNotes.push('');return value;
+      }
+      measurementNotes.push('');
       if(!match.exact||match.distributed||!label||!hasContour||boxes.some(b=>b.x<label.x-.003||b.y<label.y-.003||b.x+b.w>label.x+label.w+.003||b.y+b.h>label.y+label.h+.003))return null;
       if(d.unit==='%'){
         if(!hasContour)return null;
         const x=Math.min(...boxes.map(b=>b.x)),y=Math.min(...boxes.map(b=>b.y)),right=Math.max(...boxes.map(b=>b.x+b.w)),bottom=Math.max(...boxes.map(b=>b.y+b.h));
         return (right-x)*(bottom-y)/(label.w*label.h)*100;
       }
-      if(/ЕАС|даты|партии/.test(d.label))return null;
+      if(/ЕАС/.test(d.label))return null;
       const glyphs=match.words.filter(w=>w.confidence>=80).flatMap(w=>w.glyphs||[]).filter(g=>Number.isFinite(g.height)&&g.height>0&&(/Количество/.test(d.label)?/\d/.test(g.text):/Буквы/.test(d.label)?/\p{L}/u.test(g.text):true));
       if(glyphs.length<2)return null;
       return Math.min(...glyphs.map(g=>g.height));
     });
-    return [rule.id,{...match,boxes,dimensions}];
+    return [rule.id,{...match,boxes,dimensions,measurementNotes,quantity,date}];
   }));
 }
