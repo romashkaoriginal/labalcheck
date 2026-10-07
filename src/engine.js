@@ -35,15 +35,15 @@ export function dimensionChecks(rule,margin=false){
  if(margin)checks=checks.map(x=>({...x,min:x.unit==='мм'&&!/ЕАС/.test(x.label)?Math.round((x.min+.2)*10)/10:x.min}));
  return checks;
 }
-export function evaluate(rules,actual,{volume='0,7',margin=false,review={}}={}){
+export function evaluate(rules,actual,{volume='0,7',margin=false,review={},automatic={}}={}){
  return rules.map(rule=>{const expected=variantText(rule,volume);const state=review[rule.id]||{};let comparison=expected==='-'?{status:'na',coverage:0}:compareText(expected,actual);
   if(/знаки|мебиус|рюмка/.test(rule.title.toLowerCase())||!expected)comparison={status:'manual',coverage:0};
-  const dimensions=dimensionChecks(rule,margin).map((x,i)=>({...x,value:state.dimensions?.[i],pass:Number.isFinite(state.dimensions?.[i])&&state.dimensions[i]>=x.min}));
+  const dimensions=dimensionChecks(rule,margin).map((x,i)=>{const manual=Number.isFinite(state.dimensions?.[i]),value=manual?state.dimensions[i]:automatic[rule.id]?.dimensions?.[i];return {...x,value,estimated:!manual&&Number.isFinite(value),pass:Number.isFinite(value)&&value>=x.min};});
   const textConfirmed=state.textConfirmed===true;
-  const failed=state.rejected===true||dimensions.some(x=>Number.isFinite(x.value)&&!x.pass);
+  const failed=state.rejected===true||dimensions.some(x=>!x.estimated&&Number.isFinite(x.value)&&!x.pass);
   const complete=textConfirmed&&dimensions.every(x=>x.pass)&&(!rule.constraint||state.constraintsConfirmed)&&(!/окно.*дат/i.test(rule.title)||state.windowConfirmed);
   const exempt=!expected.trim()&&state.notApplicable&&state.note?.trim();
-  return {...rule,expected,comparison,dimensions,state,status:failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':actual&&['missing','review'].includes(comparison.status)?'issue':'pending'};
+  return {...rule,expected,comparison,dimensions,state,status:failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':dimensions.some(x=>x.estimated&&!x.pass)||actual&&['missing','review'].includes(comparison.status)?'issue':automatic[rule.id]?.exact?'detected':'pending'};
  });
 }
 export function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));}
