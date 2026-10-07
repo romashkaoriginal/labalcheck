@@ -1,4 +1,4 @@
-export function normalize(s){return String(s).toLowerCase().replace(/ё/g,'е').replace(/[«»“”"'‘’]/g,'').replace(/[º°]/g,'°').replace(/[–—−]/g,'-').replace(/\s+/g,' ').replace(/\s*([,.:;%/()-])\s*/g,'$1').trim();}
+export function normalize(s){return String(s).toLowerCase().replace(/ё/g,'е').replace(/[«»“”"'‘’]/g,'').replace(/[º°]/g,'°').replace(/\s+[–—]\s+(?=\d)/g,' ').replace(/[–—−]/g,'-').replace(/\s+/g,' ').replace(/\s*([,.:;%/()-])\s*/g,'$1').trim();}
 export function compact(s){return normalize(s).replace(/(\d)[,.](?=\d)/g,'$1¤').replace(/-(?=\d)/g,'§').replace(/[^\p{L}\p{N}¤§%°]/gu,'');}
 export function dehyphenate(s){return String(s).replace(/(\p{L})-\s*(?:[<>|{}\[\]]+\s*)?(\p{L})/gu,'$1$2');}
 export function words(s){return (normalize(dehyphenate(s)).match(/-?\d+(?:[,.]\d+)?|[\p{L}]+|[%°]/gu)||[]).map(t=>/^\d+\.\d+$/.test(t)?t.replace('.',','):t).filter(t=>t.length>1||/^[%°лг]$/.test(t));}
@@ -44,8 +44,10 @@ export function evaluate(rules,actual,{volume='0,7',margin=false,review={},autom
   const failed=state.rejected===true||dimensions.some(x=>!x.estimated&&Number.isFinite(x.value)&&!x.pass);
   const complete=textConfirmed&&dimensions.every(x=>x.pass&&!x.estimated)&&(!rule.constraint||state.constraintsConfirmed)&&(!/окно.*дат/i.test(rule.title)||state.windowConfirmed);
   const exempt=!expected.trim()&&state.notApplicable&&state.note?.trim();
-  if(automatic[rule.id]?.exact)comparison={...comparison,status:'found',coverage:100,missing:[]};
-  else if(automatic[rule.id]?.distributed&&comparison.status==='found')comparison={...comparison,status:'all_words',coverage:100,missing:[]};
+  const match=automatic[rule.id];
+  if(match?.exact)comparison={status:'found',coverage:100,missing:[]};
+  else if(match?.diff?.length)comparison={status:'partial',coverage:Math.round(Math.max(0,match.similarity??match.coverage/100)*100),wordCoverage:match.coverage,missing:[],changes:match.diff};
+  else if(Object.hasOwn(automatic,rule.id)&&comparison.status==='found')comparison={...comparison,status:'all_words',coverage:100,missing:[]};
   const status=failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':dimensions.some(x=>x.estimated&&!x.pass)?'issue':comparison.status==='found'?'detected':comparison.status==='all_words'?'words':actual&&['partial','unreadable'].includes(comparison.status)?'issue':'pending';
   return {...rule,expected,comparison,dimensions,state,status};
  });

@@ -29,11 +29,11 @@ test('quarter-turn OCR boxes map back to original page coordinates',()=>{
 });
 const words=['Крепость','40','%'].map((text,i)=>({text,confidence:95,box:{x:.1+i*.1,y:.2,w:.1,h:.1},glyphs:[...text].map(text=>({text,height:2.1}))}));
 test('locate text returns word coordinates and rejects changed numeric values',()=>{
- assert.equal(locateText('Крепость 40%',words).exact,true);assert.equal(locateText('Крепость 45%',words),null);
+ assert.equal(locateText('Крепость 40%',words).exact,true);assert.equal(locateText('Крепость 45%',words).exact,false);assert.ok(locateText('Крепость 45%',words).diff.some(d=>d.expected==='45'&&d.actual==='40'));
 });
 test('finds words spread across different areas without inventing an exact phrase',()=>{
  const mixed=[{text:'40',box:{x:.8,y:.6,w:.04,h:.04}},{text:'Состав',box:{x:.1,y:.1,w:.1,h:.02}},{text:'%',box:{x:.9,y:.6,w:.02,h:.04}},{text:'крепость',box:{x:.7,y:.6,w:.1,h:.04}}];
- const match=locateText('Состав крепость 40%',mixed);assert.equal(match.exact,false);assert.equal(match.distributed,true);assert.equal(match.coverage,100);assert.equal(match.words.length,4);
+ const match=locateText('Состав крепость 40%',mixed);assert.equal(match.exact,false);assert.ok(match.coverage<100);assert.ok(match.diff.some(d=>d.expected==='состав'));
 });
 test('automatic measurements carry uncertainty and cannot approve a requirement alone',()=>{
  const rules=[{id:'r0',title:'Крепость',text:'Крепость 40%',original:'Крепость 40%',constraint:'не менее 2 мм'}];

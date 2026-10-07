@@ -1,4 +1,5 @@
-import {compact, compareText, dehyphenate, words as textWords, variantText, dimensionChecks} from './engine.js';
+import {variantText, dimensionChecks} from './engine.js';
+import {locatePhrase,orderedTextCandidates} from './phrase.js';
 
 // Detect dashed magenta die-cut contours, not the enlarged annotations on a proof.
 // When no closed contour is supported by pixels, keep the whole page.
@@ -75,47 +76,25 @@ export function segmentInk({data,width,height},region) {
   split({x:0,y:0,w:width,h:height},0);return parts.length>1?parts:[];
 }
 
-export function wordsFromOcr(data,region,width,height,rotation,mmPerPixel) {
-  return (data.blocks||[]).flatMap(b=>b.paragraphs||[]).flatMap(p=>p.lines||[]).flatMap(l=>l.words||[]).filter(w=>w.text?.trim()).map(w=>({
-    text:w.text,confidence:w.confidence,box:mapBox(w.bbox,region,width,height,rotation),rotation,
+export function wordsFromOcr(data,region,width,height,rotation,mmPerPixel,pass='ocr') {
+  return (data.blocks||[]).flatMap((b,bi)=>(b.paragraphs||[]).flatMap((p,pi)=>(p.lines||[]).flatMap((l,li)=>(l.words||[]).filter(w=>w.text?.trim()).map(w=>({
+    text:w.text,confidence:w.confidence,box:mapBox(w.bbox,region,width,height,rotation),rotation,pass,
+    readingBox:{x:w.bbox.x0,y:w.bbox.y0,w:w.bbox.x1-w.bbox.x0,h:w.bbox.y1-w.bbox.y0},
+    line:`${bi}:${pi}:${li}`,pageAspect:width*region.h/(height*region.w),
     glyphs:(w.symbols||[]).filter(s=>/[\p{L}\p{N}]/u.test(s.text)&&s.confidence>=80).map(s=>({text:s.text,height:mmPerPixel?(s.bbox.y1-s.bbox.y0)*mmPerPixel:null})),
-  }));
+  })))));
 }
 
-export function locateText(expected,words) {
-  const target=compact(dehyphenate(expected));if(!target||target==='-')return null;
-  const distributed=part=>{const b=part.map(w=>w.box).filter(Boolean);return b.length>1&&(Math.max(...b.map(v=>v.x+v.w))-Math.min(...b.map(v=>v.x))>.55||Math.max(...b.map(v=>v.y+v.h))-Math.min(...b.map(v=>v.y))>.55);};
-  let text='',offsets=[];
-  for(const w of words){offsets.push(text.length);text+=compact(w.text);}
-  const index=text.indexOf(target);
-  if(index>=0){const selected=words.filter((w,i)=>offsets[i]<index+target.length&&offsets[i]+compact(w.text).length>index);const apart=distributed(selected);return {words:selected,exact:!apart,distributed:apart,coverage:100};}
-  const tokens=expected.split(/\s+/).filter(Boolean),size=tokens.length;
-  if(size<3)return null;
-  let best=null;
-  // Approximate matches are evidence to inspect, never an automatic text approval.
-  for(let i=0;i<words.length;i++){
-    if(!tokens.slice(0,5).some(t=>compact(t).length>2&&compact(t)===compact(words[i].text)))continue;
-    for(const extra of [-2,0,3,8]){
-      const part=words.slice(i,i+Math.max(1,size+extra)),result=compareText(expected,part.map(w=>w.text).join(' '));
-      if(result.coverage>=65&&(!best||result.coverage>best.coverage))best={words:part,exact:false,coverage:result.coverage};
-    }
-  }
-  if(best?.coverage===100)return {...best,distributed:distributed(best.words)};
-  // The same requirement may span separate panels. Keep coordinates for each
-  // recognized word rather than forcing everything into one text rectangle.
-  const wanted=textWords(expected),used=new Set(),selected=[];
-  for(const token of wanted){const i=words.findIndex((w,index)=>!used.has(index)&&textWords(w.text).includes(token));if(i>=0){used.add(i);selected.push(words[i]);}}
-  const coverage=wanted.length?Math.round(selected.length/wanted.length*100):0;
-  return coverage>(best?.coverage||0)?{words:selected,exact:false,distributed:true,coverage}:best;
-}
+export function locateText(expected,words){return locatePhrase(expected,words);}
 
 export function matchRequirements(rules,words,volume,margin,label,hasContour) {
+  const candidates=orderedTextCandidates(words);
   return Object.fromEntries(rules.map(rule=>{
-    const expected=variantText(rule,volume),match=locateText(expected,words);
+    const expected=variantText(rule,volume),match=locatePhrase(expected,words,candidates,label);
     if(!match||/знаки|мебиус|рюмка/i.test(rule.title))return [rule.id,null];
     const boxes=match.words.map(w=>w.box);
     const dimensions=dimensionChecks(rule,margin).map(d=>{
-      if(!match.exact||!label||!hasContour||boxes.some(b=>b.x<label.x-.003||b.y<label.y-.003||b.x+b.w>label.x+label.w+.003||b.y+b.h>label.y+label.h+.003))return null;
+      if(!match.exact||match.distributed||!label||!hasContour||boxes.some(b=>b.x<label.x-.003||b.y<label.y-.003||b.x+b.w>label.x+label.w+.003||b.y+b.h>label.y+label.h+.003))return null;
       if(d.unit==='%'){
         if(!hasContour)return null;
         const x=Math.min(...boxes.map(b=>b.x)),y=Math.min(...boxes.map(b=>b.y)),right=Math.max(...boxes.map(b=>b.x+b.w)),bottom=Math.max(...boxes.map(b=>b.y+b.h));
