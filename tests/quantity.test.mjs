@@ -72,6 +72,15 @@ test('glyph measurement uses visible dark ink and excludes magenta annotation pi
  const bbox={x0:0,y0:0,x1:20,y1:30},ocr={blocks:[{paragraphs:[{lines:[{words:[{text:'7',confidence:95,bbox,symbols:[{text:'7',confidence:95,bbox}]}]}]}]}]};
  assert.equal(wordsFromOcr(ocr,label,width,height,0,.1,'one',{data,width,height})[0].glyphs[0].height,1);
 });
+
+test('white letters on a colored label have a measured height, and blank pixels stay unmeasured',()=>{
+ const width=20,height=30,data=new Uint8ClampedArray(width*height*4).fill(255);
+ for(let i=0;i<data.length;i+=4){data[i]=45;data[i+1]=180;data[i+2]=190;}
+ for(let y=8;y<18;y++)for(let x=4;x<12;x++){const i=(y*width+x)*4;data[i]=data[i+1]=data[i+2]=255;}
+ const bbox={x0:0,y0:0,x1:20,y1:30},ocr={blocks:[{paragraphs:[{lines:[{words:[{text:'А',confidence:95,bbox,symbols:[{text:'А',confidence:95,bbox}]}]}]}]}]};
+ assert.equal(wordsFromOcr(ocr,label,width,height,0,.1,'one',{data,width,height})[0].glyphs[0].height,1);
+ assert.equal(wordsFromOcr(ocr,label,width,height,0,.1,'one',{data:new Uint8ClampedArray(width*height*4).fill(255),width,height})[0].glyphs[0].height,null);
+});
 test('a missing decimal is recovered only from a distinct ink component below the digit baseline',()=>{
  const width=80,height=60,data=new Uint8ClampedArray(width*height*4).fill(255);
  const fill=(x,y,w,h)=>{for(let yy=y;yy<y+h;yy++)for(let xx=x;xx<x+w;xx++){const i=(yy*width+xx)*4;data[i]=data[i+1]=data[i+2]=0;}};

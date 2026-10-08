@@ -13,3 +13,5 @@
 .quantity-match{color:#137a4b}.quantity-attention{color:#8b5313}
 .measurement-note{margin:8px 0 16px;color:#526175;overflow-wrap:anywhere}
 @media(max-width:480px){.quantity-review dl{grid-template-columns:1fr;gap:12px}}
+.phrase-review.uncertain .difference-row span{color:#526175}
+.phrase-review.uncertain .difference-head{color:#405472}

@@ -46,13 +46,14 @@ export function evaluate(rules,actual,{volume='0,7',margin=false,review={},autom
   const complete=textConfirmed&&dimensions.every(x=>x.pass&&!x.estimated)&&(!rule.constraint||state.constraintsConfirmed)&&(!/окно.*дат/i.test(rule.title)||state.windowConfirmed);
   const exempt=!expected.trim()&&state.notApplicable&&state.note?.trim();
   const match=automatic[rule.id];
+  if(match?.scope==='label'&&expected&&expected!=='-')comparison=compareText(expected,match.words.map(word=>word.text).join(' '));
   if(match?.exact)comparison={status:'found',coverage:100,missing:[]};
-  else if(match?.diff?.length)comparison={status:'partial',coverage:Math.round(Math.max(0,match.similarity??match.coverage/100)*100),wordCoverage:match.coverage,missing:[],changes:match.diff};
+  else if(match?.diff?.length)comparison={status:match.diff.every(d=>d.confidence<75)?'uncertain':'partial',coverage:Math.round(Math.max(0,match.similarity??match.coverage/100)*100),wordCoverage:match.coverage,missing:[],changes:match.diff};
   else if(Object.hasOwn(automatic,rule.id)&&comparison.status==='found')comparison={...comparison,status:'all_words',coverage:100,missing:[]};
   const quantity=match?.quantity,date=match?.date;
   const quantityIssue=quantity&&quantity.status!=='match';
-  const statusLabel=quantityIssue?'Проверить количество':dimensions.some(x=>x.estimated&&!x.pass)?'Проверить размеры':null;
-  const status=failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':quantityIssue||dimensions.some(x=>x.estimated&&!x.pass)?'issue':comparison.status==='found'?'detected':comparison.status==='all_words'?'words':actual&&['partial','unreadable'].includes(comparison.status)?'issue':'pending';
+  const statusLabel=quantityIssue?'Проверить количество':dimensions.some(x=>x.estimated&&!x.pass)?'Проверить размеры':comparison.status==='uncertain'?'Неуверенное OCR':null;
+  const status=failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':quantityIssue||dimensions.some(x=>x.estimated&&!x.pass)?'issue':comparison.status==='found'?'detected':comparison.status==='all_words'?'words':actual&&['partial','unreadable','uncertain'].includes(comparison.status)?'issue':'pending';
   return {...rule,expected,comparison,dimensions,state,status,quantity,date,statusLabel:status==='issue'?statusLabel:null};
  });
 }

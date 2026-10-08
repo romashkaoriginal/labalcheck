@@ -9,3 +9,8 @@ test('locates barcode at an arbitrary page position',()=>{
  for(let y=64;y<125;y++)for(let m=0;m<95;m++)if(printed[m]==='1')for(let x=130+m*5;x<130+(m+1)*5;x++){const i=(y*width+x)*4;data[i]=data[i+1]=data[i+2]=0;}
  const found=scanEan13({data,width,height});assert.equal(found?.text,'4813852006269');assert.ok(found.box.x>.1&&found.box.x<.2);
 });
+test('small rasterized barcode uses its complete span instead of a rounded guard width',()=>{
+ const width=340,height=100,data=new Uint8ClampedArray(width*height*4).fill(255),start=31,module=2.63;
+ for(let y=20;y<80;y++)for(let x=start;x<start+95*module;x++)if(printed[Math.floor((x-start)/module)]==='1'){const i=(y*width+x)*4;data[i]=data[i+1]=data[i+2]=0;}
+ assert.equal(scanEan13({data,width,height})?.text,'4813852006269');
+});

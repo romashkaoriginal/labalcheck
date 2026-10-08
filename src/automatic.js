@@ -79,8 +79,11 @@ export function segmentInk({data,width,height},region) {
 
 function visibleHeight(bbox,pixels){
  const {data,width,height}=pixels,x0=Math.max(0,Math.floor(bbox.x0)),x1=Math.min(width,Math.ceil(bbox.x1)),y0=Math.max(0,Math.floor(bbox.y0)),y1=Math.min(height,Math.ceil(bbox.y1));
+ let colored=0,total=0;
+ for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2];total++;if(Math.max(r,g,b)-Math.min(r,g,b)>75&&Math.min(r,g,b)<190)colored++;}
+ const reversed=total>0&&colored/total>.2;
  let start=-1,last=-1,longest=0;
- for(let y=y0;y<y1;y++){let count=0;for(let x=x0;x<x1;x++){const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2];if(Math.max(r,g,b)<150&&Math.max(r,g,b)-Math.min(r,g,b)<75)count++;}
+ for(let y=y0;y<y1;y++){let count=0;for(let x=x0;x<x1;x++){const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2];if(reversed?Math.min(r,g,b)>210&&Math.max(r,g,b)-Math.min(r,g,b)<40:Math.max(r,g,b)<150&&Math.max(r,g,b)-Math.min(r,g,b)<75)count++;}
   if(count>=Math.max(1,(x1-x0)*.025)){if(start<0||y-last>2){if(start>=0)longest=Math.max(longest,last-start+1);start=y;}last=y;}
  }
  if(start>=0)longest=Math.max(longest,last-start+1);return longest||null;
@@ -90,24 +93,27 @@ export function wordsFromOcr(data,region,width,height,rotation,mmPerPixel,pass='
     text:w.text,confidence:w.confidence,box:mapBox(w.bbox,region,width,height,rotation),rotation,pass,
     readingBox:{x:w.bbox.x0,y:w.bbox.y0,w:w.bbox.x1-w.bbox.x0,h:w.bbox.y1-w.bbox.y0},
     line:`${bi}:${pi}:${li}`,pageAspect:width*region.h/(height*region.w),
-    glyphs:(w.symbols||[]).filter(s=>/[\p{L}\p{N}]/u.test(s.text)&&s.confidence>=80).map(s=>({text:s.text,height:mmPerPixel?(pixels?visibleHeight(s.bbox,pixels):s.bbox.y1-s.bbox.y0)*mmPerPixel:null})),
+    glyphs:(w.symbols||[]).filter(s=>/[\p{L}\p{N}]/u.test(s.text)&&s.confidence>=80).map(s=>{const height=pixels?visibleHeight(s.bbox,pixels):s.bbox.y1-s.bbox.y0;return {text:s.text,height:mmPerPixel&&height?height*mmPerPixel:null};}),
   })))));
 }
 
 export function locateText(expected,words){return locatePhrase(expected,words);}
 
 export function matchRequirements(rules,words,volume,margin,label,hasContour) {
+  // Enlarged proofs on the same sheet cannot establish presence on the label.
+  const scoped=hasContour&&label;
+  if(scoped)words=words.filter(word=>insideLabel(word.box,label));
   const candidates=orderedTextCandidates(words);
   return Object.fromEntries(rules.map(rule=>{
     const expected=variantText(rule,volume);let match=locatePhrase(expected,words,candidates,label);
-    if(/знаки|мебиус|рюмка/i.test(rule.title))return [rule.id,null];
+    if(/знаки|мебиус|рюмка/i.test(rule.title)||!expected){const notes=dimensionChecks(rule,margin).map(()=>expected?'Размеры графического знака требуют отдельного измерения по оригиналу.':'В столбце 3 не задан текст. Сначала определите применимость раздела и текст для рынка.');return [rule.id,{words:[],exact:false,coverage:0,method:'manual',dimensions:notes.map(()=>null),measurementNotes:notes}];}
     const quantity=isQuantityRule(rule)?quantityEvidence(rule,expected,words,candidates,label,hasContour):null;
     const caption=quantity?locatePhrase(rule.title,words,candidates,label):null;
     if(quantity&&caption?.exact&&quantity.status==='match'){
       const found=[...new Set([...caption.words,...quantity.words])];
       match={words:found,exact:true,distributed:false,coverage:100,method:'quantity',recognizedText:caption.recognizedText+' · '+quantity.actual.text,diff:[]};
     }
-    if(!match&&!quantity)return [rule.id,null];
+    if(!match&&!quantity){if(!scoped||!expected||expected==='-')return [rule.id,null];match={words:[],exact:false,distributed:true,coverage:0,method:'words',recognizedText:'',diff:[]};}
     match??={words:quantity.words,exact:false,distributed:true,coverage:0};
     const date=/окно.*дат/i.test(rule.title)?dateEvidence(match,words,label,hasContour):null;
     const boxes=match.words.map(w=>w.box);
@@ -128,18 +134,21 @@ export function matchRequirements(rules,words,volume,margin,label,hasContour) {
         if(!Number.isFinite(value))return note('Нет надёжных размеров видимых символов. Для замера нужен PDF с физическим масштабом.');
         measurementNotes.push('');return value;
       }
-      measurementNotes.push('');
-      if(!match.exact||match.distributed||!label||!hasContour||boxes.some(b=>b.x<label.x-.003||b.y<label.y-.003||b.x+b.w>label.x+label.w+.003||b.y+b.h>label.y+label.h+.003))return null;
+      if(!label||!hasContour)return note('Контур этикетки не определён: размер нельзя подтвердить по печатному участку.');
+      if(boxes.length===0||boxes.some(b=>!insideLabel(b,label)))return note('Нужны распознанные символы внутри печатного контура этикетки.');
       if(d.unit==='%'){
-        if(!hasContour)return null;
+        if(!match.exact||match.distributed)return note('Для площади нужно уверенно найти всю предупреждающую надпись внутри этикетки.');
         const x=Math.min(...boxes.map(b=>b.x)),y=Math.min(...boxes.map(b=>b.y)),right=Math.max(...boxes.map(b=>b.x+b.w)),bottom=Math.max(...boxes.map(b=>b.y+b.h));
+        measurementNotes.push('');
         return (right-x)*(bottom-y)/(label.w*label.h)*100;
       }
-      if(/ЕАС/.test(d.label))return null;
-      const glyphs=match.words.filter(w=>w.confidence>=80).flatMap(w=>w.glyphs||[]).filter(g=>Number.isFinite(g.height)&&g.height>0&&(/Количество/.test(d.label)?/\d/.test(g.text):/Буквы/.test(d.label)?/\p{L}/u.test(g.text):true));
-      if(glyphs.length<2)return null;
-      return Math.min(...glyphs.map(g=>g.height));
+      if(/ЕАС/.test(d.label))return note('Графический знак требует отдельного измерения.');
+      if(match.coverage<80)return note('Недостаточно прочитанных символов для оценки высоты этого раздела.');
+      const heights=match.words.filter(w=>w.confidence>=80).map(w=>(w.glyphs||[]).filter(g=>Number.isFinite(g.height)&&g.height>0&&/\p{L}/u.test(g.text)).map(g=>g.height).sort((a,b)=>a-b)).filter(h=>h.length>=2).map(h=>h[Math.floor(h.length/2)]);
+      if(!heights.length)return note('Нет надёжного замера видимых символов; нужен PDF с физическим масштабом.');
+      measurementNotes.push('');
+      return Math.min(...heights);
     });
-    return [rule.id,{...match,boxes,dimensions,measurementNotes,quantity,date}];
+    return [rule.id,{...match,scope:scoped?'label':'page',boxes,dimensions,measurementNotes,quantity,date}];
   }));
 }

@@ -116,6 +116,7 @@ function exactMatch(target,candidates,label,excluded=[]){
 
 // Semi-global alignment searches a phrase inside a larger paragraph and keeps
 // substitutions, omitted tokens and additional tokens visible to the operator.
+const lookalike=(a,b)=>a.length===b.length&&a!==b&&[...a].every((x,i)=>x===b[i]||(/[оo0]/u.test(x)&&/[оo0]/u.test(b[i]))||(/[ий]/u.test(x)&&/[ий]/u.test(b[i])));
 function align(target,candidate){
  const actual=candidate.tokens,m=target.length,n=actual.length,stride=n+1,step=m+1,grid=new Int32Array((m+1)*stride);
  // A secondary reward for exact tokens breaks edit-distance ties in favour of
@@ -123,12 +124,12 @@ function align(target,candidate){
  for(let i=1;i<=m;i++){grid[i*stride]=i*step;for(let j=1;j<=n;j++)grid[i*stride+j]=Math.min(grid[(i-1)*stride+j-1]+(tokenOption(actual[j-1],target[i-1])?-1:step),grid[(i-1)*stride+j]+step,grid[i*stride+j-1]+step);}
  let end=0;for(let j=1;j<=n;j++)if(grid[m*stride+j]<grid[m*stride+end])end=j;
  let i=m,j=end,same=0;const operations=[],chosen=new Map();
- while(i>0){const value=grid[i*stride+j];if(j>0&&value===grid[(i-1)*stride+j-1]+(tokenOption(actual[j-1],target[i-1])?-1:step)){const option=tokenOption(actual[j-1],target[i-1]),equal=!!option;if(option)chosen.set(j-1,option);operations.push({kind:equal?'same':actual[j-1].uncertainValues?'uncertain':'replace',expected:target[i-1],actual:equal?target[i-1]:actual[j-1].uncertainValues?.join(' / ')||actual[j-1].value});same+=Number(equal);i--;j--;}
-  else if(value===grid[(i-1)*stride+j]+step){operations.push({kind:'missing',expected:target[i-1],actual:''});i--;}
-  else{operations.push({kind:'extra',expected:'',actual:actual[j-1].value});j--;}
+ while(i>0){const value=grid[i*stride+j];if(j>0&&value===grid[(i-1)*stride+j-1]+(tokenOption(actual[j-1],target[i-1])?-1:step)){const option=tokenOption(actual[j-1],target[i-1]),equal=!!option,read=actual[j-1];if(option)chosen.set(j-1,option);operations.push({kind:equal?'same':read.uncertainValues?'uncertain':'replace',expected:target[i-1],actual:equal?target[i-1]:read.uncertainValues?.join(' / ')||read.value,confidence:equal?100:read.uncertainValues||lookalike(target[i-1],read.value)?0:Math.max(0,...read.words.map(w=>w.confidence??0))});same+=Number(equal);i--;j--;}
+  else if(value===grid[(i-1)*stride+j]+step){operations.push({kind:'missing',expected:target[i-1],actual:'',confidence:0});i--;}
+  else{const read=actual[j-1];operations.push({kind:'extra',expected:'',actual:read.value,confidence:Math.max(0,...read.words.map(w=>w.confidence??0))});j--;}
  }
  const selected=uniqueWords(actual.slice(j,end).map((token,index)=>chosen.get(index+j)||token));if(!selected.length)return null;
- const diff=[];for(const op of operations.reverse()){if(op.kind==='same')continue;const previous=diff.at(-1);if(previous?.kind===op.kind){previous.expected=[previous.expected,op.expected].filter(Boolean).join(' ');previous.actual=[previous.actual,op.actual].filter(Boolean).join(' ');}else diff.push({...op});}
+ const diff=[];for(const op of operations.reverse()){if(op.kind==='same')continue;const previous=diff.at(-1);if(previous?.kind===op.kind){previous.expected=[previous.expected,op.expected].filter(Boolean).join(' ');previous.actual=[previous.actual,op.actual].filter(Boolean).join(' ');previous.confidence=Math.max(previous.confidence,op.confidence);}else diff.push({...op});}
  const ordered=operations,cost=ordered.filter(op=>op.kind!=='same').length,leading=ordered.findIndex(op=>op.kind!=='missing'),trailing=[...ordered].reverse().findIndex(op=>op.kind!=='missing');
  return {words:selected,exact:false,distributed:false,coverage:Math.round(same/m*100),similarity:1-cost/m,method:'layout',rotation:candidate.rotation,lineCount:candidate.lineCount,missingEdges:Math.max(0,leading,trailing),recognizedText:dehyphenate(selected.map(w=>w.text).join(' ')),diff};
 }
@@ -140,12 +141,19 @@ function fragmentsOf(expected){
 }
 const sameLocation=(a,b)=>{const overlap=Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x))*Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));return overlap/Math.min(a.w*a.h,b.w*b.h)>.65;};
 
-export function locatePhrase(expected,words,candidates=orderedTextCandidates(words),label=null){
+export function locatePhrase(expected,words,candidates=orderedTextCandidates(words),label=null,part=false){
  const target=phraseTokens(expected);if(!target.length||expected.trim()==='-')return null;
  const exact=exactMatch(target,candidates,label);if(exact)return exact;
  const fragments=fragmentsOf(expected),matches=[];
  for(const fragment of fragments){const match=exactMatch(phraseTokens(fragment),candidates,label,matches.flatMap(m=>m.words));if(!match){matches.length=0;break;}matches.push(match);}
  if(matches.length)return {words:matches.flatMap(m=>m.words),exact:true,distributed:true,coverage:100,method:'fragments',fragments:matches.length,recognizedText:matches.map(m=>m.recognizedText).join('\n'),diff:[]};
+ if(!part&&fragments.length>1){
+  const parts=fragments.map(fragment=>locatePhrase(fragment,words,candidates,label,true));
+  if(parts.every(m=>m&&!m.distributed&&m.coverage>=55)){
+   const lengths=fragments.map(fragment=>phraseTokens(fragment).length),total=lengths.reduce((n,x)=>n+x,0);
+   return {words:[...new Set(parts.flatMap(m=>m.words))],exact:false,distributed:true,coverage:Math.round(parts.reduce((n,m,i)=>n+m.coverage*lengths[i],0)/total),similarity:parts.reduce((n,m,i)=>n+(m.similarity??m.coverage/100)*lengths[i],0)/total,method:'sections',parts,recognizedText:parts.map(m=>m.recognizedText).join('\n'),diff:parts.flatMap(m=>m.diff||[])};
+  }
+ }
  const ranked=candidates.map(candidate=>{const values=new Set(candidate.tokens.flatMap(t=>t.options.map(o=>o.value)));return {candidate,overlap:target.filter(t=>values.has(t)).length};}).filter(c=>c.overlap>=Math.min(2,target.length)).sort((a,b)=>b.overlap-a.overlap).slice(0,10);
  let best=null;
  for(const {candidate} of ranked){const match=align(target,candidate);if(match&&match.similarity>=.5&&(!best||match.similarity>best.similarity))best=match;}
@@ -157,13 +165,20 @@ export function locatePhrase(expected,words,candidates=orderedTextCandidates(wor
 
 export function refinementAreas(matches){
  const areas=[];
- for(const match of Object.values(matches)){
-  if(!match||match.exact||match.distributed||match.coverage<45||match.words.length<2)continue;
-  const b=bounds(match.words),height=median(match.words.map(w=>w.box.h)),width=median(match.words.map(w=>w.box.w));let padX=Math.max(.002,median(match.words.map(w=>w.box.w/Math.max(1,w.text.length)))*3),padY=Math.max(.002,height*.7);
+ for(let match of Object.values(matches)){
+  if(match?.parts){areas.push(...refinementAreas(Object.fromEntries(match.parts.map((part,i)=>[i,part]))));continue;}
+  if(!match||match.exact||match.distributed&&match.method!=='words'||match.coverage<45||match.words.length<2)continue;
+  if(match.method==='words'){
+   const rotation=match.words[0].rotation||0,b=bounds(match.words),vertical=rotation%180;
+   if(match.words.some(word=>(word.rotation||0)!==rotation)||(vertical?b.w>median(match.words.map(word=>word.box.w))*2:b.h>median(match.words.map(word=>word.box.h))*2))continue;
+   match={...match,rotation,lineCount:rotation%180?undefined:1};
+  }
+  let b=bounds(match.words);const height=median(match.words.map(w=>w.box.h)),width=median(match.words.map(w=>w.box.w));let padX=Math.max(.002,median(match.words.map(w=>w.box.w/Math.max(1,w.text.length)))*3),padY=Math.max(.002,height*.7);
+  if(match.method==='words'&&match.rotation%180){const stripeWidth=Math.min(...match.words.map(word=>word.box.w));b={...b,x:median(match.words.map(word=>word.box.x+word.box.w))-stripeWidth,w:stripeWidth};padX=.002;padY=Math.max(.002,median(match.words.map(word=>word.box.h/Math.max(1,word.text.length)))*2);}
   if(match.missingEdges){if(match.rotation%180)padY+=Math.min(.08,match.missingEdges*height);else if(b.h<height*1.8)padX+=Math.min(.08,match.missingEdges*width);else padY+=Math.min(.08,Math.ceil(match.missingEdges/Math.max(2,match.words.length*height/b.h))*height*1.6);}
   const x=Math.max(0,b.x-padX),y=Math.max(0,b.y-padY),area={x,y,w:Math.min(1,b.x+b.w+padX)-x,h:Math.min(1,b.y+b.h+padY)-y,rotation:match.rotation||0};
-  if(areas.some(a=>sameLocation(a,area)&&a.rotation===area.rotation))continue;
-  areas.push({...area,lineCount:match.lineCount});if(areas.length===8)break;
+  if(areas.some(a=>sameLocation(a,area)&&a.rotation===area.rotation&&Math.min(a.w*a.h,area.w*area.h)/Math.max(a.w*a.h,area.w*area.h)>.65))continue;
+  areas.push({...area,lineCount:match.lineCount,priority:match.method==='words'?2:match.rotation%180?1:0});
  }
- return areas;
+ return areas.sort((a,b)=>(b.priority||0)-(a.priority||0)).slice(0,8).map(({priority,...area})=>area);
 }

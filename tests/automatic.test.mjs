@@ -45,3 +45,23 @@ test('percentage requires a detected label boundary',()=>{
  const rules=[{id:'r0',title:'Предупреждение',text:'Крепость 40%',original:'Крепость 40%',constraint:'не менее 10%'}];
  assert.equal(matchRequirements(rules,words,'0,7',false,{x:0,y:0,w:1,h:1},false).r0.dimensions[0],null);
 });
+
+test('an exact enlarged proof cannot override changed or absent text on the printed label',()=>{
+ const rule={id:'r0',title:'Крепость',text:'Крепость 40%',original:'Крепость 40%',constraint:''};
+ const proof=words.map(w=>({...w,pass:'proof'})),printed=words.map(w=>({...w,text:w.text==='40'?'45':w.text,box:{...w.box,x:w.box.x+.5},pass:'printed'}));
+ const contour={x:.55,y:.1,w:.4,h:.3};
+ const automatic=matchRequirements([rule],[...proof,...printed],'0,7',false,contour,true);
+ assert.equal(automatic.r0.exact,false);assert.ok(automatic.r0.words.every(w=>w.box.x>=contour.x));
+ assert.equal(evaluate([rule],'Крепость 40% Крепость 45%',{automatic})[0].comparison.status,'partial');
+ const absent=matchRequirements([rule],proof,'0,7',false,contour,true);
+ assert.equal(evaluate([rule],'Крепость 40%',{automatic:absent})[0].comparison.status,'unreadable');
+ assert.equal(matchRequirements([rule],proof,'0,7',false,null,false).r0.exact,true);
+});
+
+test('uncertain text does not discard reliable glyph heights in its physical section',()=>{
+ const rule={id:'r0',title:'Надпись',text:'Хранить плотно закрытым',original:'Хранить плотно закрытым',constraint:'не менее 0,8 мм'};
+ const printed=['Хранить','плотно','е','закрытым'].map((text,i)=>({text,confidence:i===2?20:95,pass:'print',box:{x:.1+i*.12,y:.1,w:.1,h:.02},glyphs:[{text:'А',height:.9},{text:'Б',height:.9},{text:'В',height:i===3?.1:.9}]}));
+ const automatic=matchRequirements([rule],printed,'0,7',false,{x:0,y:0,w:1,h:1},true);
+ assert.equal(automatic.r0.dimensions[0],.9);
+ assert.equal(evaluate([rule],printed.map(w=>w.text).join(' '),{automatic})[0].comparison.status,'uncertain');
+});

@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {locatePhrase,phraseTokens,refinementAreas} from '../src/phrase.js';
+import {locatePhrase,phraseTokens,refinementAreas,orderedTextCandidates} from '../src/phrase.js';
 import {evaluate} from '../src/engine.js';
+import {matchRequirements} from '../src/automatic.js';
+import {readFileSync} from 'node:fs';
+import {gunzipSync} from 'node:zlib';
 
 const line=(text,x=.1,y=.1,pass='one')=>text.split(' ').map((text,i)=>({text,confidence:96,pass,box:{x:x+i*.07,y,w:.065,h:.025}}));
 
@@ -32,10 +35,35 @@ test('several OCR attempts can corroborate adjacent words at their physical posi
 });
 test('changed numeric values produce a specific substitution',()=>{
  const match=locatePhrase('Крепость 40 %',line('Крепость 45 %'));
- assert.equal(match.exact,false);assert.deepEqual(match.diff,[{kind:'replace',expected:'40',actual:'45'}]);
+ assert.equal(match.exact,false);assert.deepEqual(match.diff,[{kind:'replace',expected:'40',actual:'45',confidence:96}]);
+});
+test('high-confidence changed digits remain a possible real mismatch',()=>{
+ const rule={id:'code',title:'Регламент',text:'ТР ТС 021/2011',original:'ТР ТС 021/2011',constraint:''};
+ const match=locatePhrase(rule.text,line('ТР ТС 022/2011'));
+ assert.equal(match.diff[0].confidence,96);
+ assert.equal(evaluate([rule],'ТР ТС 022/2011',{automatic:{code:match}})[0].comparison.status,'partial');
+});
+test('a weak adjacent replacement does not hide a confidently different numeric value',()=>{
+ const rule={id:'date',title:'Дата',text:'Дата розлива партии 01 2025 года',original:'Дата розлива партии 01 2025 года',constraint:''};
+ const actual=line('Дата розлива партии 02 2026 года');actual[4].confidence=20;
+ const match=locatePhrase(rule.text,actual,orderedTextCandidates(actual,false));
+ assert.equal(match.diff[0].confidence,96);
+ assert.equal(evaluate([rule],actual.map(word=>word.text).join(' '),{automatic:{date:match}})[0].comparison.status,'partial');
+});
+test('sample maker, warning and supplemental text do not report weak OCR glyphs as printed differences',()=>{
+ const fixture=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/sample-ocr.json.gz',import.meta.url))));
+ const rules=fixture.rules.filter(rule=>['r3','r7','r16'].includes(rule.id));
+ const matches=matchRequirements(rules,fixture.words,'0,7',false,fixture.label,true);
+ const rows=evaluate(rules,fixture.words.map(w=>w.text).join(' '),{automatic:matches});
+ for(const row of rows){assert.equal(row.comparison.status,'uncertain',row.title);assert.equal(row.statusLabel,'Неуверенное OCR');assert.equal(row.status,'issue');}
+ assert.equal(matches.r3.method,'sections');
+ assert.ok(matches.r3.recognizedText.startsWith('СТРАНА ПРОИСХОЖДЕНИЯ'));
+ assert.doesNotMatch(matches.r3.recognizedText.slice(0,60),/КДЖ|ККАЛ|930/);
+ assert.ok(matches.r16.diff.every(d=>d.confidence<75));
+ assert.ok(refinementAreas(matches).every(area=>area.h<.15));
 });
 test('missing percent and an extra negation cannot become exact matches',()=>{
- assert.deepEqual(locatePhrase('Крепость 40 %',line('Крепость 40')).diff,[{kind:'missing',expected:'%',actual:''}]);
+ assert.deepEqual(locatePhrase('Крепость 40 %',line('Крепость 40')).diff,[{kind:'missing',expected:'%',actual:'',confidence:0}]);
  const match=locatePhrase('Хранить в холодильнике',line('Хранить не в холодильнике'));
  assert.equal(match.exact,false);assert.ok(match.diff.some(d=>d.actual==='не'));
 });
@@ -82,4 +110,12 @@ test('extra words lower phrase similarity even when every expected word has been
  const rule={id:'r0',title:'Условия хранения',original:'Хранить в холодильнике',text:'Хранить в холодильнике',constraint:''};
  const match=locatePhrase(rule.text,line('Хранить не в холодильнике'));assert.equal(match.coverage,100);
  const result=evaluate([rule],rule.text,{automatic:{r0:match}})[0];assert.equal(result.comparison.status,'partial');assert.ok(result.comparison.coverage<100);
+});
+
+test('a long incomplete vertical warning is reread even when a short nearby phrase already has an area',()=>{
+ const word=(text,y)=>({text,rotation:90,confidence:65,box:{x:.45,y,w:.02,h:.035}});
+ const short={words:[word('Срок',.54),word('годности',.58)],exact:false,coverage:90,rotation:90,method:'layout'};
+ const warning={words:[word('Чрезмерное',.57),word('вашему',.4),word('здоровью',.35)],exact:false,distributed:true,coverage:50,method:'words'};
+ const areas=refinementAreas({short,warning});
+ assert.equal(areas.length,2);assert.equal(areas[0].rotation,90);assert.ok(areas[0].h>.2);
 });

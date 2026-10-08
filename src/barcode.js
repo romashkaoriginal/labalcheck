@@ -30,8 +30,13 @@ export function scanEan13({data,width,height},wanted=null){
      const base=end-x;
      if(base<1||base>Math.max(14,length/95*2))continue;
      let quiet=true;for(let i=Math.max(0,x-base*6);i<x;i++)if(p[i]){quiet=false;break;}if(!quiet)continue;
-     for(const factor of [.85,.9,.95,1,1.01,1.0125,1.02,1.05,1.1,1.15,1.17,1.2,1.21,1.215,1.22,1.23,1.25]){
-      const module=base*factor;if(x+95*module>=length)continue;
+     // Rasterization can make a one-module guard bar narrower than the mean
+     // module. Estimate the complete 59-run symbol before sampling its bits.
+     let runEnd=x,runs=0,color=true;
+     while(runEnd<length&&runs<59){while(runEnd<length&&p[runEnd]===color)runEnd++;runs++;color=!color;}
+     const modules=[...(runs===59?[(runEnd-x)/95]:[]),...[.85,.9,.95,1,1.01,1.0125,1.02,1.05,1.1,1.15,1.17,1.2,1.21,1.215,1.22,1.23,1.25].map(factor=>base*factor)];
+     for(const module of modules){
+      if(x+95*module>=length)continue;
       for(const shift of [-.5,-.4,-.3,-.2,-.1,0,.1,.2]){
        const bits=Array.from({length:95},(_,i)=>p[Math.round(x+(i+.5+shift)*module)]?'1':'0').join('');
        const text=parseEan13(bits);if(!text)continue;
