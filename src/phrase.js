@@ -1,4 +1,4 @@
-import {normalize,dehyphenate} from './engine.js';
+import {normalize,dehyphenate,fold} from './engine.js';
 
 export function phraseTokens(text){
  const tokens=normalize(dehyphenate(text)).match(/-?\d+(?:[,.]\d+)?|[\p{L}]+|[%°]/gu)||[];
@@ -71,7 +71,8 @@ export function pageReadingBox(box,rotation,aspect){
 function consensusWords(words){
  const clusters=[],buckets=new Map();
  for(const word of words){
-  if(!word.box||(word.confidence??100)<30)continue;
+  // Very weak readings still count when several passes repeat them identically.
+  if(!word.box||(word.confidence??100)<20)continue;
   const rotation=word.rotation||0,aspect=word.pageAspect||1,text=normalize(word.text),pieces=[...text.matchAll(/-?\d+(?:[,.]\d+)?|[\p{L}]+|[%°]/gu)];
   for(const piece of pieces){const start=piece.index/text.length,end=(piece.index+piece[0].length)/text.length,b=word.box,span=end-start;
    const box=rotation===90?{x:b.x,y:b.y+b.h*(1-end),w:b.w,h:b.h*span}:rotation===270?{x:b.x,y:b.y+b.h*start,w:b.w,h:b.h*span}:rotation===180?{x:b.x+b.w*(1-end),y:b.y,w:b.w*span,h:b.h}:{x:b.x+b.w*start,y:b.y,w:b.w*span,h:b.h};
@@ -117,6 +118,9 @@ function exactMatch(target,candidates,label,excluded=[]){
 // Semi-global alignment searches a phrase inside a larger paragraph and keeps
 // substitutions, omitted tokens and additional tokens visible to the operator.
 const confusionGroups=['оo0','ий','дл','аa','еe','сc','рp'];
+// "40" read as "0", "0,1" as "1": a digit lost at the edge of a large or
+// faint number is an OCR slip far more often than a different print.
+const truncated=(a,b)=>{const x=a.replace(/\D/g,''),y=b.replace(/\D/g,'');return /\d/.test(a)&&y.length>0&&y.length<x.length&&(x.endsWith(y)||x.startsWith(y));};
 const lookalike=(a,b)=>a.length===b.length&&a!==b&&[...a].every((x,i)=>x===b[i]||confusionGroups.some(group=>group.includes(x)&&group.includes(b[i])));
 function align(target,candidate){
  const actual=candidate.tokens,m=target.length,n=actual.length,stride=n+1,step=m+1,grid=new Int32Array((m+1)*stride);
@@ -125,31 +129,69 @@ function align(target,candidate){
  for(let i=1;i<=m;i++){grid[i*stride]=i*step;for(let j=1;j<=n;j++)grid[i*stride+j]=Math.min(grid[(i-1)*stride+j-1]+(tokenOption(actual[j-1],target[i-1])?-1:step),grid[(i-1)*stride+j]+step,grid[i*stride+j-1]+step);}
  let end=0;for(let j=1;j<=n;j++)if(grid[m*stride+j]<grid[m*stride+end])end=j;
  let i=m,j=end,same=0;const operations=[],chosen=new Map();
- while(i>0){const value=grid[i*stride+j];if(j>0&&value===grid[(i-1)*stride+j-1]+(tokenOption(actual[j-1],target[i-1])?-1:step)){const option=tokenOption(actual[j-1],target[i-1]),equal=!!option,read=actual[j-1];if(option)chosen.set(j-1,option);operations.push({kind:equal?'same':read.uncertainValues?'uncertain':'replace',expected:target[i-1],actual:equal?target[i-1]:read.uncertainValues?.join(' / ')||read.value,confidence:equal?100:read.uncertainValues||lookalike(target[i-1],read.value)?0:Math.max(0,...read.words.map(w=>w.confidence??0))});same+=Number(equal);i--;j--;}
+ while(i>0){const value=grid[i*stride+j];if(j>0&&value===grid[(i-1)*stride+j-1]+(tokenOption(actual[j-1],target[i-1])?-1:step)){const option=tokenOption(actual[j-1],target[i-1]),equal=!!option,read=actual[j-1];if(option)chosen.set(j-1,option);operations.push({words:equal?option.words:read.words,kind:equal?'same':read.uncertainValues||lookalike(target[i-1],read.value)||truncated(target[i-1],read.value)?'uncertain':'replace',expected:target[i-1],actual:equal?target[i-1]:read.uncertainValues?.join(' / ')||read.value,confidence:equal?100:read.uncertainValues||lookalike(target[i-1],read.value)||truncated(target[i-1],read.value)?0:Math.max(0,...read.words.map(w=>w.confidence??0))});same+=Number(equal);i--;j--;}
   else if(value===grid[(i-1)*stride+j]+step){operations.push({kind:'missing',expected:target[i-1],actual:'',confidence:0});i--;}
   else{const read=actual[j-1];operations.push({kind:'extra',expected:'',actual:read.value,confidence:Math.max(0,...read.words.map(w=>w.confidence??0))});j--;}
  }
  const selected=uniqueWords(actual.slice(j,end).map((token,index)=>chosen.get(index+j)||token));if(!selected.length)return null;
- const diff=[];for(const op of operations.reverse()){if(op.kind==='same')continue;const previous=diff.at(-1);if(previous?.kind===op.kind){previous.expected=[previous.expected,op.expected].filter(Boolean).join(' ');previous.actual=[previous.actual,op.actual].filter(Boolean).join(' ');previous.confidence=Math.max(previous.confidence,op.confidence);}else diff.push({...op});}
+ // A word missing between two words that were both read is absent from the
+ // print; a word missing at the edge of the reading may simply be unread.
+ operations.reverse();
+ operations.forEach((op,index)=>{if(op.kind!=='missing')return;let before=index-1,after=index+1;while(operations[before]?.kind==='missing')before--;while(operations[after]?.kind==='missing')after++;if(operations[before]?.kind==='same'&&operations[after]?.kind==='same'){op.anchored=true;op.between=[operations[before].words.at(-1),operations[after].words[0]];}});
+ for(const op of operations)if(op.kind!=='missing')delete op.words;
+ const diff=[];for(const op of operations){if(op.kind==='same')continue;const previous=diff.at(-1);if(previous?.kind===op.kind&&!!previous.anchored===!!op.anchored){previous.expected=[previous.expected,op.expected].filter(Boolean).join(' ');previous.actual=[previous.actual,op.actual].filter(Boolean).join(' ');previous.confidence=Math.max(previous.confidence,op.confidence);}else diff.push({...op});}
+ // "Е330" read as "ЕЗЗО": the same shapes in other characters. Such a pair is
+ // an uncertain reading, never a difference of the artwork.
+ const squeezed=text=>fold(String(text).replace(/\s+/g,''));
+ for(let i=0;i<diff.length;i++){
+  const item=diff[i],next=diff[i+1];
+  if(item.kind==='replace'&&squeezed(item.expected)===squeezed(item.actual)){item.kind='uncertain';item.confidence=0;continue;}
+  // The split may fall anywhere: "Е330" → "ЕЗЗ 0" or "Е ЗЗО".
+  if(!next||![item,next].every(change=>['missing','replace','uncertain'].includes(change.kind))||![item,next].some(change=>change.actual))continue;
+  if(squeezed(item.expected+next.expected)===squeezed(item.actual+next.actual))diff.splice(i,2,{kind:'uncertain',expected:[item.expected,next.expected].join(' '),actual:[item.actual,next.actual].filter(Boolean).join(' '),confidence:0});
+ }
  const ordered=operations,cost=ordered.filter(op=>op.kind!=='same').length,leading=ordered.findIndex(op=>op.kind!=='missing'),trailing=[...ordered].reverse().findIndex(op=>op.kind!=='missing');
  return {words:selected,exact:false,distributed:false,coverage:Math.round(same/m*100),similarity:1-cost/m,method:'layout',rotation:candidate.rotation,lineCount:candidate.lineCount,missingEdges:Math.max(0,leading,trailing),recognizedText:dehyphenate(selected.map(w=>w.text).join(' ')),diff};
 }
 
-function fragmentsOf(expected){
+export function fragmentsOf(expected){
  const raw=expected.split(/\n+|(?<=[.!?;])\s+(?=[А-ЯЁA-Z])/u).map(s=>s.trim()).filter(Boolean),parts=[];
  for(const piece of raw){if(phraseTokens(piece).length<3&&parts.length)parts[parts.length-1]+=' '+piece;else parts.push(piece);}
  return parts.length>1&&parts.every(p=>phraseTokens(p).length>=3)?parts:[];
 }
 const sameLocation=(a,b)=>{const overlap=Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x))*Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));return overlap/Math.min(a.w*a.h,b.w*b.h)>.65;};
 
+// Is the print empty where words of the requirement are absent from a reading?
+// Only then are they absent from the artwork. If any OCR pass read anything
+// between the two neighbouring words, the missing words may stand there unread.
+function blankBetween(words,[before,after]){
+ if(!before?.box||!after?.box)return false;
+ const turn=before.rotation||0,flat=turn%180===0,size=flat?before.box.h:before.box.w;
+ const row=b=>flat?b.y+b.h/2:b.x+b.w/2,start=b=>turn===0?b.x:turn===180?-(b.x+b.w):turn===270?b.y:-(b.y+b.h),end=b=>turn===0?b.x+b.w:turn===180?-b.x:turn===270?b.y+b.h:-b.y;
+ const sameRow=(a,b)=>Math.abs(row(a)-row(b))<size*.6,wrapped=!sameRow(before.box,after.box);
+ return !words.some(word=>{
+  const b=word.box;if(!b||word===before||word===after||(word.rotation||0)!==turn||(word.confidence??100)<30||!/[\p{L}\p{N}]/u.test(word.text||''))return false;
+  if(Math.min(end(b),end(before.box))-Math.max(start(b),start(before.box))>(end(b)-start(b))*.5&&sameRow(b,before.box))return false; // another reading of the same word
+  if(Math.min(end(b),end(after.box))-Math.max(start(b),start(after.box))>(end(b)-start(b))*.5&&sameRow(b,after.box))return false;
+  const afterBefore=sameRow(b,before.box)&&start(b)>=end(before.box)-size*.3,beforeAfter=sameRow(b,after.box)&&end(b)<=start(after.box)+size*.3;
+  return wrapped?afterBefore||beforeAfter:afterBefore&&beforeAfter;
+ });
+}
+function settleGaps(match,words){
+ const visit=item=>{if(item?.parts)item.parts.forEach(visit);for(const change of item?.diff||[]){if(change.between&&!blankBetween(words,change.between))delete change.anchored;delete change.between;}};
+ visit(match);return match;
+}
 export function locatePhrase(expected,words,candidates=orderedTextCandidates(words),label=null,part=false){
+ return settleGaps(findPhrase(expected,words,candidates,label,part),words);
+}
+function findPhrase(expected,words,candidates,label,part){
  const target=phraseTokens(expected);if(!target.length||expected.trim()==='-')return null;
  const exact=exactMatch(target,candidates,label);if(exact)return exact;
  const fragments=fragmentsOf(expected),matches=[];
  for(const fragment of fragments){const match=exactMatch(phraseTokens(fragment),candidates,label,matches.flatMap(m=>m.words));if(!match){matches.length=0;break;}matches.push(match);}
  if(matches.length)return {words:matches.flatMap(m=>m.words),exact:true,distributed:true,coverage:100,method:'fragments',fragments:matches.length,recognizedText:matches.map(m=>m.recognizedText).join('\n'),diff:[]};
  if(!part&&fragments.length>1){
-  const parts=fragments.map(fragment=>locatePhrase(fragment,words,candidates,label,true));
+  const parts=fragments.map(fragment=>findPhrase(fragment,words,candidates,label,true));
   if(parts.every(m=>m&&!m.distributed&&m.coverage>=55)){
    const lengths=fragments.map(fragment=>phraseTokens(fragment).length),total=lengths.reduce((n,x)=>n+x,0);
    return {words:[...new Set(parts.flatMap(m=>m.words))],exact:false,distributed:true,coverage:Math.round(parts.reduce((n,m,i)=>n+m.coverage*lengths[i],0)/total),similarity:parts.reduce((n,m,i)=>n+(m.similarity??m.coverage/100)*lengths[i],0)/total,method:'sections',parts,recognizedText:parts.map(m=>m.recognizedText).join('\n'),diff:parts.flatMap(m=>m.diff||[])};

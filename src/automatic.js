@@ -1,21 +1,34 @@
-import {variantText, dimensionChecks} from './engine.js';
-import {locatePhrase,orderedTextCandidates} from './phrase.js';
-import {isQuantityRule,quantities,expectedQuantity,quantityComparison,quantityEvidence,dateEvidence,glyphHeight,insideLabel} from './quantity.js';
+import {variantText, dimensionChecks, scopeIndex, normalize} from './engine.js';
+import {locatePhrase,orderedTextCandidates,fragmentsOf} from './phrase.js';
+import {isQuantityRule,quantities,expectedQuantity,quantityComparison,quantityEvidence,dateEvidence,glyphHeight,insideLabel,equivalentNotations} from './quantity.js';
+
+// Two panels standing side by side or one above the other are also enclosed by
+// their joint outline. A frame holding two large frames with a gutter between
+// them is that group, never a label. Parts of one label divided by a fold line
+// share that line and have no gutter, so the label around them is kept.
+function jointOutline(frame,frames){
+ const inside=(a,b)=>a.x>=b.x-.006&&a.y>=b.y-.006&&a.x+a.w<=b.x+b.w+.006&&a.y+a.h<=b.y+b.h+.006;
+ const gutter=(a,b)=>a.x+a.w<b.x-.006||b.x+b.w<a.x-.006||a.y+a.h<b.y-.006||b.y+b.h<a.y-.006;
+ const parts=frames.filter(other=>other!==frame&&inside(other,frame)&&other.w*other.h>frame.w*frame.h*.2&&other.w*other.h<frame.w*frame.h*.8);
+ return parts.some((a,i)=>parts.slice(i+1).some(b=>gutter(a,b)));
+}
 
 // Detect closed chromatic die-cut contours, independent of position and hue.
 // When no closed contour is supported by pixels, keep the whole page.
 export function detectFrames({data,width,height},colorBand=null) {
   if(colorBand===null){
     const all=[];for(const band of ['magenta','cyan','red','blue','green','mixed'])for(const frame of detectFrames({data,width,height},band))if(!all.some(f=>Math.abs(f.x-frame.x)<.005&&Math.abs(f.y-frame.y)<.005&&Math.abs(f.w-frame.w)<.005&&Math.abs(f.h-frame.h)<.005))all.push(frame);
+    const single=all.filter(frame=>!jointOutline(frame,all));
     // A printed contour may change ink colour along an edge. Join boxes with
     // the same left edge and overlapping height before selecting a candidate.
     const merged=[];
-    for(const frame of all){const other=merged.find(box=>{const overlap=Math.max(0,Math.min(box.y+box.h,frame.y+frame.h)-Math.max(box.y,frame.y));return Math.abs(box.x-frame.x)<.006&&overlap/Math.min(box.h,frame.h)>.75;});
+    for(const frame of single){const other=merged.find(box=>{const overlap=Math.max(0,Math.min(box.y+box.h,frame.y+frame.h)-Math.max(box.y,frame.y));return Math.abs(box.x-frame.x)<.006&&overlap/Math.min(box.h,frame.h)>.75;});
       if(!other){merged.push({...frame});continue;}
       const widthRatio=Math.max(other.w,frame.w)/Math.min(other.w,frame.w);
       const right=widthRatio>1.25?Math.max(other.x+other.w,frame.x+frame.w):Math.min(other.x+other.w,frame.x+frame.w),bottom=Math.max(other.y+other.h,frame.y+frame.h);other.x=Math.min(other.x,frame.x);other.y=Math.min(other.y,frame.y);other.w=right-other.x;other.h=bottom-other.y;
     }
-    return merged.slice(0,8);
+    // Large contours first: a label must not be crowded out by small boxes of a form.
+    return merged.sort((a,b)=>b.w*b.h-a.w*a.h).slice(0,8);
   }
   const pink=(x,y)=>{const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2];return colorBand==='mixed'?Math.max(r,g,b)-Math.min(r,g,b)>55&&Math.min(r,g,b)<215:colorBand==='magenta'?r>140&&r>g*1.2&&b>g*1.12:colorBand==='cyan'?g>140&&g>r*1.2&&b>r*1.12:colorBand==='red'?r>140&&r>g*1.5&&r>b*1.5:colorBand==='blue'?b>140&&b>r*1.5&&b>g*1.5:g>140&&g>r*1.5&&g>b*1.5;};
   const lines=[];
@@ -37,10 +50,46 @@ export function detectFrames({data,width,height},colorBand=null) {
     const top=edge(y),bottom=edge(y+h);
     if(top.score<.35||bottom.score<.35||bottom.y-top.y<Math.max(12,height*.04))continue;
     const r={x:a.x/width,y:top.y/height,w:w/width,h:(bottom.y-top.y)/height};
-    if(!frames.some(f=>Math.abs(f.x-r.x)<.02&&Math.abs(f.y-r.y)<.02&&Math.abs(f.w-r.w)<.02&&Math.abs(f.h-r.h)<.02))frames.push(r);
+    // Lines a few pixels apart give near-identical boxes. The tightest one is
+    // kept: it ends on this panel's own line, not on its neighbour's.
+    const twin=frames.findIndex(f=>Math.abs(f.x-r.x)<.02&&Math.abs(f.y-r.y)<.02&&Math.abs(f.w-r.w)<.02&&Math.abs(f.h-r.h)<.02);
+    if(twin<0)frames.push(r);else if(r.w*r.h<frames[twin].w*frames[twin].h)frames[twin]=r;
   }
-  // Inner fold lines must not turn one label into several partial candidates.
-  return frames.filter(a=>!frames.some(b=>b!==a&&a.x>=b.x-.003&&a.y>=b.y-.003&&a.x+a.w<=b.x+b.w+.003&&a.y+a.h<=b.y+b.h+.003&&b.w*b.h>a.w*a.h*1.12)).slice(0,8);
+  // Inner fold lines must not turn one label into several partial candidates,
+  // but the joint outline of neighbouring panels must not swallow them either.
+  const own=frames.filter(frame=>!jointOutline(frame,frames));
+  return own.filter(a=>!own.some(b=>b!==a&&a.x>=b.x-.003&&a.y>=b.y-.003&&a.x+a.w<=b.x+b.w+.003&&a.y+a.h<=b.y+b.h+.003&&b.w*b.h>a.w*a.h*1.12)).slice(0,8);
+}
+
+// The die-cut is a thin line of one saturated ink. Colour fills that touch it
+// (a bleed band, a varnish panel) are paler or of another hue, so each side of
+// a found frame is moved onto the nearest row or column drawn in the line's own
+// ink. Works at any resolution; sides without such a line stay where they were.
+export function refineFrame({data,width,height},frame){
+ const x0=Math.round(frame.x*width),y0=Math.round(frame.y*height),x1=Math.round((frame.x+frame.w)*width),y1=Math.round((frame.y+frame.h)*height),w=x1-x0,h=y1-y0;
+ const tone=(x,y)=>{if(x<0||y<0||x>=width||y>=height)return null;const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2],max=Math.max(r,g,b),d=max-Math.min(r,g,b);if(d<60)return null;const hue=max===r?((g-b)/d+6)%6:max===g?(b-r)/d+2:(r-g)/d+4;return {hue:hue*60,d};};
+ const slack=Math.max(3,Math.round(Math.max(width,height)*.004)),samples=[];
+ for(let y=Math.round(y0+h*.25);y<y1-h*.25;y+=Math.max(1,Math.round(h/60)))for(const x of [x0,x1]){
+  let best=null;for(let dx=-slack;dx<=slack;dx++){const t=tone(x+dx,y);if(t&&(!best||t.d>best.d))best=t;}
+  if(best)samples.push(best);
+ }
+ if(samples.length<12)return frame;
+ const strength=[...samples].sort((a,b)=>a.d-b.d)[Math.floor(samples.length/2)].d;
+ const sin=samples.reduce((n,s)=>n+Math.sin(s.hue*Math.PI/180),0),cos=samples.reduce((n,s)=>n+Math.cos(s.hue*Math.PI/180),0),hue=(Math.atan2(sin,cos)*180/Math.PI+360)%360;
+ const line=(x,y)=>{const t=tone(x,y);if(!t||t.d<strength*.8)return false;const gap=Math.abs(t.hue-hue)%360;return Math.min(gap,360-gap)<=16;};
+ const side=(horizontal,at,from,to)=>{
+  // Search around the found edge for the fullest thin run of the line's ink.
+  const reach=Math.round((horizontal?h:w)*.07)+slack;let best=null;
+  for(let d=-reach;d<=reach;d++){
+   const p=at+d;let n=0;for(let q=from;q<to;q++)if(horizontal?line(q,p):line(p,q))n++;
+   const cover=n/(to-from);if(cover>=.55&&(!best||cover>best.cover+.02))best={p,cover};
+  }
+  return best?best.p:at;
+ };
+ const left=side(false,x0,Math.round(y0+h*.15),Math.round(y1-h*.15)),right=side(false,x1,Math.round(y0+h*.15),Math.round(y1-h*.15));
+ const top=side(true,y0,Math.round(x0+w*.15),Math.round(x1-w*.15)),bottom=side(true,y1,Math.round(x0+w*.15),Math.round(x1-w*.15));
+ if(right-left<w*.8||bottom-top<h*.8)return frame;
+ return {x:left/width,y:top/height,w:(right-left)/width,h:(bottom-top)/height};
 }
 
 export function detectArtworkRegion({data,width,height}) {
@@ -130,6 +179,41 @@ export function wordsFromOcr(data,region,width,height,rotation,mmPerPixel,pass='
 
 export function locateText(expected,words){return locatePhrase(expected,words);}
 
+// Typical letter height of an inscription: the median of confidently read
+// letters in each word, then the smallest word. One clipped glyph does not
+// lower a whole section, and lowercase text yields its lowercase height.
+export function typicalHeight(words){
+ const heights=words.filter(w=>(w.confidence??0)>=80).map(w=>(w.glyphs||[]).filter(g=>Number.isFinite(g.height)&&g.height>0&&/\p{L}/u.test(g.text)).map(g=>g.height).sort((a,b)=>a-b)).filter(h=>h.length>=2).map(h=>h[Math.floor(h.length/2)]);
+ if(!heights.length)return null;
+ heights.sort((x,y)=>x-y);
+ // One word far below every other is a broken glyph box, not small print:
+ // small print comes in more than one word.
+ let skip=0;while(heights.length-skip>=5&&skip<Math.max(1,Math.floor(heights.length*.05))&&heights[skip]<heights[skip+1]*.6)skip++;
+ return heights[skip];
+}
+// The reading chosen for its text may come from a pass that could not measure
+// glyphs (a quarter-turned read of upright text, a second engine). Another
+// reading of the same word at the same place may carry the heights.
+function measurable(found,all){
+ const sized=word=>(word.glyphs||[]).filter(glyph=>Number.isFinite(glyph.height)&&glyph.height>0).length>=2;
+ const spot=(a,b)=>Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x))*Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y))>Math.min(a.w*a.h,b.w*b.h)*.6;
+ return found.map(word=>{
+  if(!word.box||sized(word))return word;
+  return all.find(other=>other!==word&&other.box&&(other.confidence??0)>=80&&sized(other)&&normalize(other.text)===normalize(word.text)&&spot(other.box,word.box))||word;
+ });
+}
+// Words of the found phrase that fall under each of several minima of one rule.
+function partitionedWords(expected,match,checks){
+ const groups=new Map(),sentences=fragmentsOf(expected);
+ for(const sentence of sentences.length?sentences:[expected]){
+  const index=scopeIndex(checks,sentence);if(index<0)continue;
+  const located=sentences.length?locatePhrase(sentence,match.words):match;
+  if(!located||located.coverage<80||located.distributed&&!located.exact)continue;
+  groups.set(index,[...(groups.get(index)||[]),...located.words]);
+ }
+ return groups;
+}
+
 function codeConflict(expected,candidates){
  const codes=[...expected.matchAll(/\d{6,}(?:[.-]\d+)*/g)];
  if(codes.length!==1)return null;
@@ -151,7 +235,7 @@ function codeConflict(expected,candidates){
    const firstDigits=code[0].match(/^\d{6,}/)[0];
    const word=candidate.words.find(item=>item.text.includes(firstDigits));
    if(!word)continue;
-   evidence.push({candidate,word,found,wanted,actual,confidence:word.confidence??0,score:anchorsSeen.length*100+(word.confidence??0)+actual.length*2-between.length});
+   evidence.push({candidate,word,found,wanted,actual,anchors,confidence:word.confidence??0,score:anchorsSeen.length*100+(word.confidence??0)+actual.length*2-between.length});
   }
  }
  return evidence.sort((a,b)=>b.score-a.score)[0]||null;
@@ -164,11 +248,19 @@ export function matchRequirements(rules,words,volume,margin,label,hasContour) {
   const candidates=orderedTextCandidates(words);
   return Object.fromEntries(rules.map(rule=>{
     const expected=variantText(rule,volume);let match=locatePhrase(expected,words,candidates,label);
+    // "г/л" printed where Word writes "г/дм3": the same value in another notation.
+    if(!match?.exact&&!isQuantityRule(rule))for(const other of equivalentNotations(expected)){
+      const found=locatePhrase(other.text,words,candidates,label);
+      if(found?.exact){match={...found,notation:{expected:other.from,printed:other.to}};break;}
+    }
     if(match&&!match.exact&&match.coverage>=35){
       const code=codeConflict(expected,candidates);
       if(code){
-       const line=code.word.line==null?code.candidate.words:code.candidate.words.filter(word=>word.line===code.word.line);
-       const focus=line.length?line:code.candidate.words,other=(match.diff||[]).filter(change=>!(change.kind==='missing'&&change.expected.replace(/\D/g,'')===code.wanted.replace(/\D/g,'')));
+       // Show the caption and its code, not the whole OCR line they were read in.
+       const all=code.candidate.words,at=all.indexOf(code.word);let start=at,end=at;
+       for(let i=at-1;i>=Math.max(0,at-8);i--)if(code.anchors.some(anchor=>all[i].text.toLocaleLowerCase('ru').includes(anchor)))start=i;
+       while(all[end+1]&&/^[\d.\s-]+$/.test(all[end+1].text)&&(/[.-]$/.test(all[end].text)||/^[.-]/.test(all[end+1].text)))end++;
+       const focus=all.slice(start,end+1),other=(match.diff||[]).filter(change=>!(change.kind==='missing'&&change.expected.replace(/\D/g,'')===code.wanted.replace(/\D/g,'')));
        match={...match,method:'code-review',recognizedText:focus.map(word=>word.text).join(' ').replace(/(?<=\d)\s+([.-])\s*(?=\d)/g,'$1'),words:focus,diff:[...other,{kind:'replace',expected:code.wanted,actual:code.actual,confidence:code.confidence}]};
       }
     }
@@ -187,24 +279,35 @@ export function matchRequirements(rules,words,volume,margin,label,hasContour) {
     }
     if(!match&&!quantity){if(!scoped||!expected||expected==='-')return [rule.id,null];match={words:[],exact:false,distributed:true,coverage:0,method:'words',recognizedText:'',diff:[]};}
     match??={words:quantity.words,exact:false,distributed:true,coverage:0};
+    if(match.words.length)match={...match,words:measurable(match.words,words)};
     const date=/окно.*дат/i.test(rule.title)?dateEvidence(match,words,label,hasContour):null;
     const boxes=match.words.map(w=>w.box);
-    const measurementNotes=[];
-    const dimensions=dimensionChecks(rule,margin).map(d=>{
+    const measurementNotes=[],checks=dimensionChecks(rule,margin),measuredWords=[];
+    const partitioned=checks.some(d=>d.target==='partitioned_letters')&&match.words.length?partitionedWords(expected,match,checks):new Map();
+    const dimensions=checks.map((d,index)=>{
       const note=text=>{measurementNotes.push(text);return null;};
-      if(d.target==='partitioned_letters')return note('Разные минимумы относятся к разным строкам. По общей OCR-фразе их нельзя измерять одним числом; проверьте выноску и оригинал отдельно.');
+      if(d.target==='partitioned_letters'){
+        // Each minimum is measured on its own sentences, never on the whole phrase.
+        if(!label||!hasContour)return note('Контур этикетки не определён: размер нельзя подтвердить по печатному участку.');
+        const part=partitioned.get(index);
+        if(!part?.length)return note('Предложения, к которым относится этот минимум, не найдены на этикетке уверенно. Проверьте выноску и оригинал.');
+        if(part.some(w=>!insideLabel(w.box,label)))return note('Нужны распознанные символы внутри печатного контура этикетки.');
+        const value=typicalHeight(part);
+        if(!Number.isFinite(value))return note('Нет надёжного замера видимых символов; нужен макет с физическим масштабом.');
+        measuredWords[index]=part;measurementNotes.push('');return value;
+      }
       if(['quantity','quantity_label','date_label','date_digits'].includes(d.target)){
         if(!hasContour||!label)return note('Контур этикетки не определён: печатный участок нельзя отделить от технических образцов.');
         let value=null;
-        if(d.target==='quantity_label')value=caption?.exact&&caption.words.every(w=>insideLabel(w.box,label))?glyphHeight(caption.words,/\p{L}/u):null;
+        if(d.target==='quantity_label')value=caption?.exact&&caption.words.every(w=>insideLabel(w.box,label))?glyphHeight(measurable(caption.words,words),/\p{L}/u):null;
         if(d.target==='quantity'){
           if(quantity?.status==='ambiguous')return note('Несколько разных чтений количества. Нужна сверка по макету.');
           if(Number.isFinite(quantity?.numberHeight)&&Number.isFinite(quantity?.unitHeight))value=Math.min(quantity.numberHeight,quantity.unitHeight);
-          else return note('Для количества нужны надёжные размеры и цифр, и единицы. Перечитайте макет или загрузите PDF в масштабе 1:1.');
+          else return note('Для количества нужны надёжные размеры и цифр, и единицы. Перечитайте макет или загрузите файл с физическим масштабом.');
         }
         if(d.target==='date_label')value=match.exact&&match.words.every(w=>insideLabel(w.box,label))?glyphHeight(match.words,/\p{L}/u):null;
         if(d.target==='date_digits'){value=date?.numberHeight;if(!Number.isFinite(value))return note(date?.reason||'Цифры не удалось измерить. Нужен образец печати с датой / партией.');}
-        if(!Number.isFinite(value))return note('Нет надёжных размеров видимых символов. Для замера нужен PDF с физическим масштабом.');
+        if(!Number.isFinite(value))return note('Нет надёжных размеров видимых символов. Нужен макет с подтверждённым физическим масштабом и уверенно прочитанные символы.');
         measurementNotes.push('');return value;
       }
       if(!label||!hasContour)return note('Контур этикетки не определён: размер нельзя подтвердить по печатному участку.');
@@ -217,15 +320,15 @@ export function matchRequirements(rules,words,volume,margin,label,hasContour) {
       }
       if(/ЕАС/.test(d.label))return note('Графический знак требует отдельного измерения.');
       if(match.coverage<80)return note('Недостаточно прочитанных символов для оценки высоты этого раздела.');
-      const heights=match.words.filter(w=>w.confidence>=80).map(w=>(w.glyphs||[]).filter(g=>Number.isFinite(g.height)&&g.height>0&&/\p{L}/u.test(g.text)).map(g=>g.height).sort((a,b)=>a-b)).filter(h=>h.length>=2).map(h=>h[Math.floor(h.length/2)]);
-      if(!heights.length)return note('Нет надёжного замера видимых символов; нужен PDF с физическим масштабом.');
+      const value=typicalHeight(match.words);
+      if(!Number.isFinite(value))return note('Нет надёжного замера видимых символов; нужен макет с физическим масштабом.');
       measurementNotes.push('');
-      return Math.min(...heights);
+      return value;
     });
-    const measurementMeta=dimensionChecks(rule,margin).map((d,i)=>{
+    const measurementMeta=checks.map((d,i)=>{
       if(!Number.isFinite(dimensions[i]))return null;
       if(d.unit==='%')return {method:'rectangle',textBox:{x:Math.min(...boxes.map(b=>b.x)),y:Math.min(...boxes.map(b=>b.y)),w:Math.max(...boxes.map(b=>b.x+b.w))-Math.min(...boxes.map(b=>b.x)),h:Math.max(...boxes.map(b=>b.y+b.h))-Math.min(...boxes.map(b=>b.y))},labelBox:label};
-      const measured=(['quantity','quantity_label'].includes(d.target)?[...(caption?.words||[]),...(quantity?.words||[])]:match.words).filter(w=>(w.confidence??0)>=80&&w.glyphs?.some(g=>Number.isFinite(g.height)));
+      const measured=(['quantity','quantity_label'].includes(d.target)?[...(caption?.words||[]),...(quantity?.words||[])]:measuredWords[i]||match.words).filter(w=>(w.confidence??0)>=80&&w.glyphs?.some(g=>Number.isFinite(g.height)));
       const steps=measured.map(w=>Math.max(w.sourcePixelMm||0,w.mmPerPixel||0)).filter(n=>Number.isFinite(n)&&n>0);
       return {method:'raster-glyphs',pixelStep:steps.length?Math.max(...steps):null,symbols:measured.reduce((n,w)=>n+w.glyphs.filter(g=>Number.isFinite(g.height)).length,0)};
     });

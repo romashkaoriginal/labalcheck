@@ -9,6 +9,11 @@ const constraintMarker=/^(?:требования(?: к (?:размерам|ма�
 const sectionMarker=/^(?:раздел|элемент маркировки|показатель)\s*:\s*(.+)$/i;
 const sizeSentence=s=>/(?:не менее|не более|минимальн|максимальн|высота шрифта|размер букв)/i.test(s)&&/\d\s*(?:мм|см|%|mm|cm)/i.test(s);
 
+// Word writes "25 °С" and "г/дм³" with an ordinary 0 or 3 raised above the
+// line. Read as plain digits they become "25 0С" and "дм3", which no label
+// carries. A raised run is therefore turned into the sign it stands for.
+export const raisedText=text=>String(text).replace(/[0oOоО]/g,'°').replace(/2/g,'²').replace(/3/g,'³');
+
 export function suggestedHeightMargin(conditions){
  for(const sentence of conditions||[]){
   if(!/увеличива\w*|запас/i.test(sentence)||!/высот|шрифт|размер/i.test(sentence))continue;

@@ -37,6 +37,11 @@ try{
  await page.locator('button.rule-row[data-rule="r11"]').click();
  assert.match(await page.locator('.quantity-review').innerText(),/На макете\s+0,7 л/);
  assert.match(await page.locator('.quantity-review').innerText(),/совпадают с Word/);
+ // Size callouts of the technical sheet are read and listed apart from measured sizes.
+ const callouts=await page.locator('.annotation-overview summary').innerText();
+ assert.ok(Number(callouts.match(/прочитано (\d+)/)?.[1])>=15,callouts);
+ assert.match(await page.locator('.annotation-review').innerText(),/3 мм[\s\S]*ниже минимума 4 мм/);
+ assert.match(await page.locator('.calibration').textContent(),/из PDF/);
  assert.deepEqual(errors,[]);
  console.log('Browser smoke passed: contour, product, barcode, physical volume.');
 }finally{await browser?.close();await close();}

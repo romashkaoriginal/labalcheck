@@ -17,3 +17,4 @@
 .annotation-reading small{flex-basis:100%;color:#665568;overflow-wrap:anywhere}
 .annotation-claim{color:#236b4d}.annotation-fail{color:#a12222}
 .annotation-review p{font-size:12px;line-height:1.6;color:#665568;margin-top:10px}
+.callout-table{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}.callout-table th,.callout-table td{padding:7px 9px;border-top:1px solid #eadde9;text-align:left;vertical-align:top}.callout-table small{color:#7a6379}.annotation-overview .table-wrap{overflow-x:auto}.annotation-reading small{flex-basis:100%}

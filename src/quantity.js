@@ -4,10 +4,16 @@ const units={л:['volume',1,'л'],l:['volume',1,'л'],литр:['volume',1,'л']
 export const isQuantityRule=rule=>/^(?:об[ъь]?[её]м|масса(?: нетто)?|количество(?: товара)?|номинальный об[ъь]?[её]м)$/i.test(rule.title.trim());
 export function quantities(text){
  const result=[],source=String(text).toLowerCase().replace(/³/g,'3');
- for(const m of source.matchAll(/(?<![\p{L}\p{N}.,+-])(\d+(?:[.,]\d+)?)\s*(литров|литра|литр|дм3|dm3|м3|m3|мл|ml|cl|сл|кг|kg|мг|mg|л|l|г|g)(?![\p{L}\p{N}])/gu)){
+ for(const m of source.matchAll(/(?<![\p{L}\p{N}.,+-])(\d+(?:[.,]\d+)?)\s*(литров|литра|литр|дм3|dm3|м3|m3|мл|ml|cl|сл|кг|kg|мг|mg|л|l|г|g)(?![\p{L}\p{N}])(?!\s*\/)/gu)){
   const [kind,factor,unit]=units[m[2]],value=Number(m[1].replace(',','.'));result.push({value,unit,kind,baseValue:value*factor,text:m[0],index:m.index});
  }
  return result;
+}
+// The same unit in another notation: 1 дм³ is 1 л, 1 см³ is 1 мл. The value is
+// equal; whether the other spelling is acceptable is the specialist's call.
+const notations=[[/(?<=[\d/]\s*)дм\s*[3³]/giu,'л','дм³','л'],[/(?<=[\d/]\s*)л(?![\p{L}\p{N}])/giu,'дм3','л','дм³'],[/(?<=[\d/]\s*)см\s*[3³]/giu,'мл','см³','мл'],[/(?<=[\d/]\s*)мл(?![\p{L}\p{N}])/giu,'см3','мл','см³']];
+export function equivalentNotations(text){
+ return notations.map(([pattern,replacement,from,to])=>({text:String(text).replace(pattern,replacement),from,to})).filter(item=>item.text!==String(text));
 }
 export function expectedQuantity(rule,expected){const parsed=quantities(expected);return parsed.length===1?parsed[0]:null;}
 export function quantityComparison(expected,actual){
@@ -42,13 +48,18 @@ function quantityHeights(words){
  }
  return {numberHeight:number.length?Math.min(...number):null,unitHeight:unit.length?Math.min(...unit):null};
 }
+// A weak reading repeated identically by three or more passes at one place is
+// taken as read. Its letters are still not measured from weak glyphs.
+const trust=word=>Math.max(word.confidence??0,(word.alternatives?.find(option=>option.words[0]?.text===word.text)?.support||0)>=3?76:0);
 export function quantityEvidence(rule,expected,words,candidates,label,hasContour){
  const wanted=expectedQuantity(rule,expected),found=[];
  for(const c of candidates)for(let i=0;i<c.words.length;i++)for(const size of [1,2,3]){
-  const group=c.words.slice(i,i+size);if(group.length!==size||group.some(w=>(w.confidence??0)<75||hasContour&&!inside(w.box,label)))continue;
+  const group=c.words.slice(i,i+size);if(group.length!==size||group.some(w=>trust(w)<75||hasContour&&!inside(w.box,label)))continue;
   // Prevent assembling a quantity from different lines or distant panels.
   const boxes=group.map(w=>w.readingBox||w.box),height=Math.max(...boxes.map(b=>b.h));
   if(boxes.some((b,j)=>j&&Math.abs(b.y+b.h/2-boxes[0].y-boxes[0].h/2)>height*.6)||boxes.some((b,j)=>j&&(b.x-boxes[j-1].x-boxes[j-1].w>height*1.5||b.x<boxes[j-1].x)))continue;
+  // "75 г" followed by "/л" is a concentration even when OCR split it into two words.
+  if(/^\s*\//.test(c.words[i+size]?.text||''))continue;
   const text=group.map(w=>w.text).join(' '),values=quantities(text);
   if(values.length!==1||!/^\s*\d+[.,]?\d*\s*[\p{L}³\d]+\s*$/u.test(text))continue;
   const surrounding=c.words.slice(Math.max(0,i-3),i+size+3);
@@ -60,7 +71,7 @@ export function quantityEvidence(rule,expected,words,candidates,label,hasContour
    const b=w.readingBox||w.box,h=Math.max(first.h,b.h),sameRow=Math.abs(first.y+first.h/2-b.y-b.h/2)<h*.9;
    return sameRow&&first.x>=b.x+b.w-h*.5&&first.x-b.x-b.w<h*10;
   });
-  const value=values[0];found.push({...value,words:group,anchored,score:Math.min(...group.map(w=>w.confidence??0)),uncertain:c.tokens?.some(t=>t.uncertainValues&&t.words.some(w=>group.includes(w)))});
+  const value=values[0];found.push({...value,words:group,anchored,score:Math.min(...group.map(trust)),uncertain:c.tokens?.some(t=>t.uncertainValues&&t.words.some(w=>group.includes(w)))});
  }
  // Deduplicate repeated OCR of one physical marking. Never prefer a reading
  // just because it matches Word: conflicting numeric readings stay ambiguous.
