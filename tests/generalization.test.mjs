@@ -80,8 +80,8 @@ test('a low-confidence number cannot become exact merely by matching the require
 });
 
 test('similar letter shapes stay visible as ambiguity instead of being silently replaced',()=>{
- const words=['Срок','голности'].map((text,i)=>({text,confidence:96,box:{x:.1+i*.15,y:.1,w:.14,h:.025},pass:'raw'}));
- const match=locatePhrase('Срок годности',words);assert.equal(match.exact,false);assert.equal(match.diff[0].actual,'голности');assert.equal(match.diff[0].confidence,0);
+ const words=['Срок','голности','не','ограничен'].map((text,i)=>({text,confidence:96,box:{x:.1+i*.15,y:.1,w:.14,h:.025},pass:'raw'}));
+ const match=locatePhrase('Срок годности не ограничен',words);assert.equal(match.exact,false);assert.equal(match.diff[0].actual,'голности');assert.equal(match.diff[0].confidence,0);
 });
 
 test('baseline crops remain available when a vertical neighbour obstructs ink projection',()=>{
