@@ -8,5 +8,8 @@ cpSync('node_modules/pdfjs-dist/build/pdf.worker.min.mjs','dist/vendor/pdf.worke
 cpSync('node_modules/tesseract.js/dist/worker.min.js','dist/vendor/worker.min.js');
 cpSync('node_modules/tesseract.js-core','dist/vendor/core',{recursive:true});
 cpSync('node_modules/pdfjs-dist/cmaps','dist/vendor/cmaps',{recursive:true});
-await build({entryPoints:['src/app.js'],bundle:true,format:'esm',outfile:'dist/app.js',minify:true,target:'es2022'});
+mkdirSync('dist/vendor/ort',{recursive:true});
+for(const file of ['ort-wasm-simd-threaded.jsep.mjs','ort-wasm-simd-threaded.jsep.wasm','ort-wasm-simd-threaded.mjs','ort-wasm-simd-threaded.wasm'])cpSync(`node_modules/onnxruntime-web/dist/${file}`,`dist/vendor/ort/${file}`);
+await build({entryPoints:['src/app.js'],bundle:true,format:'esm',outfile:'dist/app.js',minify:true,target:'es2022',external:['./secondary-ocr.js']});
+await build({entryPoints:['src/secondary-ocr.js'],bundle:true,format:'esm',outfile:'dist/secondary-ocr.js',minify:true,target:'es2022',external:['fs','path']});
 console.log('Site built: dist');

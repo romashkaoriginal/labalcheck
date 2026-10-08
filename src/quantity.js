@@ -31,7 +31,10 @@ export function glyphHeight(words,pattern){
 }
 function quantityHeights(words){
  const number=[],unit=[];let unitStarted=false;
- for(const word of words){if((word.confidence??0)<80)continue;
+ // A unit in a caption-anchored quantity can be weaker OCR than its digits.
+ // Keep its measured glyphs visible at the same confidence floor used to
+ // accept the complete quantity; the result remains an estimated measurement.
+ for(const word of words){if((word.confidence??0)<75)continue;
   for(const glyph of word.glyphs||[]){if(/\p{L}/u.test(glyph.text))unitStarted=true;
    if(!Number.isFinite(glyph.height)||glyph.height<=0)continue;
    if(unitStarted)unit.push(glyph.height);else if(/\d/.test(glyph.text))number.push(glyph.height);
@@ -50,12 +53,22 @@ export function quantityEvidence(rule,expected,words,candidates,label,hasContour
   if(values.length!==1||!/^\s*\d+[.,]?\d*\s*[\p{L}³\d]+\s*$/u.test(text))continue;
   const surrounding=c.words.slice(Math.max(0,i-3),i+size+3);
   if(surrounding.some(w=>/^(?:на|продукта|ценность|ценности|углеводы|белки|жиры|калорийность)$/i.test(w.text.replace(/[.,:;()]/g,''))&&boxes.some(b=>{const r=w.readingBox||w.box;return Math.abs(r.y+r.h/2-b.y-b.h/2)<Math.min(r.h,b.h)*.8&&Math.max(r.h,b.h)/Math.min(r.h,b.h)<1.8&&Math.abs(r.x-b.x)<height*10;})))continue;
-  const value=values[0];found.push({...value,words:group,score:Math.min(...group.map(w=>w.confidence??0)),uncertain:c.tokens?.some(t=>t.uncertainValues&&t.words.some(w=>group.includes(w)))});
+  const captionPattern=/^об[ъь]?[её]м$|^масса$|^нетто$|^количество$/i;
+  const first=boxes[0];
+  const anchored=c.words.slice(Math.max(0,i-4),i).some(w=>{
+   if(!captionPattern.test(w.text.trim()))return false;
+   const b=w.readingBox||w.box,h=Math.max(first.h,b.h),sameRow=Math.abs(first.y+first.h/2-b.y-b.h/2)<h*.9;
+   return sameRow&&first.x>=b.x+b.w-h*.5&&first.x-b.x-b.w<h*10;
+  });
+  const value=values[0];found.push({...value,words:group,anchored,score:Math.min(...group.map(w=>w.confidence??0)),uncertain:c.tokens?.some(t=>t.uncertainValues&&t.words.some(w=>group.includes(w)))});
  }
  // Deduplicate repeated OCR of one physical marking. Never prefer a reading
  // just because it matches Word: conflicting numeric readings stay ambiguous.
- found.sort((a,b)=>b.score-a.score);const best=found[0];
- const credible=found.filter(f=>f.score>=85),distinct=new Set(credible.map(f=>`${f.kind}:${f.baseValue}:${f.unit}`));
+ // A value immediately after the printed quantity caption is stronger spatial
+ // evidence than a higher-confidence nutrition or sugar value elsewhere.
+ const pool=found.some(f=>f.anchored)?found.filter(f=>f.anchored):found;
+ pool.sort((a,b)=>b.score-a.score);const best=pool[0];
+ const credible=pool.filter(f=>f.score>=85),distinct=new Set(credible.map(f=>`${f.kind}:${f.baseValue}:${f.unit}`));
  const conflict=distinct.size>1||best?.uncertain;
  const status=conflict?'ambiguous':quantityComparison(wanted,best);
  return {expected:wanted,actual:best?{value:best.value,unit:best.unit,kind:best.kind,baseValue:best.baseValue,text:best.text}:null,status,words:best?.words||[],...(!conflict&&best?quantityHeights(best.words):{numberHeight:null,unitHeight:null})};

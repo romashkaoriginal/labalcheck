@@ -1,12 +1,23 @@
 import {variantText, dimensionChecks} from './engine.js';
 import {locatePhrase,orderedTextCandidates} from './phrase.js';
-import {isQuantityRule,quantityEvidence,dateEvidence,glyphHeight,insideLabel} from './quantity.js';
+import {isQuantityRule,quantities,expectedQuantity,quantityComparison,quantityEvidence,dateEvidence,glyphHeight,insideLabel} from './quantity.js';
 
 // Detect closed chromatic die-cut contours, independent of position and hue.
 // When no closed contour is supported by pixels, keep the whole page.
 export function detectFrames({data,width,height},colorBand=null) {
-  if(colorBand===null){const all=[];for(const band of ['magenta','cyan','red','blue','green'])for(const frame of detectFrames({data,width,height},band))if(!all.some(f=>Math.abs(f.x-frame.x)<.005&&Math.abs(f.y-frame.y)<.005&&Math.abs(f.w-frame.w)<.005&&Math.abs(f.h-frame.h)<.005))all.push(frame);return all.slice(0,8);}
-  const pink=(x,y)=>{const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2];return colorBand==='magenta'?r>140&&r>g*1.2&&b>g*1.12:colorBand==='cyan'?g>140&&g>r*1.2&&b>r*1.12:colorBand==='red'?r>140&&r>g*1.5&&r>b*1.5:colorBand==='blue'?b>140&&b>r*1.5&&b>g*1.5:g>140&&g>r*1.5&&g>b*1.5;};
+  if(colorBand===null){
+    const all=[];for(const band of ['magenta','cyan','red','blue','green','mixed'])for(const frame of detectFrames({data,width,height},band))if(!all.some(f=>Math.abs(f.x-frame.x)<.005&&Math.abs(f.y-frame.y)<.005&&Math.abs(f.w-frame.w)<.005&&Math.abs(f.h-frame.h)<.005))all.push(frame);
+    // A printed contour may change ink colour along an edge. Join boxes with
+    // the same left edge and overlapping height before selecting a candidate.
+    const merged=[];
+    for(const frame of all){const other=merged.find(box=>{const overlap=Math.max(0,Math.min(box.y+box.h,frame.y+frame.h)-Math.max(box.y,frame.y));return Math.abs(box.x-frame.x)<.006&&overlap/Math.min(box.h,frame.h)>.75;});
+      if(!other){merged.push({...frame});continue;}
+      const widthRatio=Math.max(other.w,frame.w)/Math.min(other.w,frame.w);
+      const right=widthRatio>1.25?Math.max(other.x+other.w,frame.x+frame.w):Math.min(other.x+other.w,frame.x+frame.w),bottom=Math.max(other.y+other.h,frame.y+frame.h);other.x=Math.min(other.x,frame.x);other.y=Math.min(other.y,frame.y);other.w=right-other.x;other.h=bottom-other.y;
+    }
+    return merged.slice(0,8);
+  }
+  const pink=(x,y)=>{const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2];return colorBand==='mixed'?Math.max(r,g,b)-Math.min(r,g,b)>55&&Math.min(r,g,b)<215:colorBand==='magenta'?r>140&&r>g*1.2&&b>g*1.12:colorBand==='cyan'?g>140&&g>r*1.2&&b>r*1.12:colorBand==='red'?r>140&&r>g*1.5&&r>b*1.5:colorBand==='blue'?b>140&&b>r*1.5&&b>g*1.5:g>140&&g>r*1.5&&g>b*1.5;};
   const lines=[];
   for(let x=0;x<width;x++){
     let start=-1,last=-1,count=0;
@@ -119,6 +130,33 @@ export function wordsFromOcr(data,region,width,height,rotation,mmPerPixel,pass='
 
 export function locateText(expected,words){return locatePhrase(expected,words);}
 
+function codeConflict(expected,candidates){
+ const codes=[...expected.matchAll(/\d{6,}(?:[.-]\d+)*/g)];
+ if(codes.length!==1)return null;
+ const wanted=codes[0][0],anchors=(expected.slice(0,codes[0].index).match(/\p{L}{2,}/gu)||[]).slice(-2).map(s=>s.toLocaleLowerCase('ru'));
+ if(!anchors.length)return null;
+ const evidence=[];
+ for(const candidate of candidates){
+  const found=candidate.words.map(word=>word.text).join(' ');
+  for(const code of found.matchAll(/\d{6,}(?:\s*[.-]\s*\d+)*/g)){
+   const actual=code[0].replace(/\s+/g,'');if(actual===wanted)continue;
+   const before=found.slice(Math.max(0,code.index-80),code.index).toLocaleLowerCase('ru');
+   const anchorsSeen=anchors.filter(anchor=>before.includes(anchor));
+   if(!anchorsSeen.length)continue;
+   const lastAnchor=Math.max(...anchorsSeen.map(anchor=>before.lastIndexOf(anchor)+anchor.length));
+   const between=before.slice(lastAnchor);
+   // The first long number following a standard/code caption is its value.
+   // A later barcode on the same OCR line must not replace that value.
+   if(/\d{6,}/.test(between))continue;
+   const firstDigits=code[0].match(/^\d{6,}/)[0];
+   const word=candidate.words.find(item=>item.text.includes(firstDigits));
+   if(!word)continue;
+   evidence.push({candidate,word,found,wanted,actual,confidence:word.confidence??0,score:anchorsSeen.length*100+(word.confidence??0)+actual.length*2-between.length});
+  }
+ }
+ return evidence.sort((a,b)=>b.score-a.score)[0]||null;
+}
+
 export function matchRequirements(rules,words,volume,margin,label,hasContour) {
   // Enlarged proofs on the same sheet cannot establish presence on the label.
   const scoped=hasContour&&label;
@@ -126,8 +164,22 @@ export function matchRequirements(rules,words,volume,margin,label,hasContour) {
   const candidates=orderedTextCandidates(words);
   return Object.fromEntries(rules.map(rule=>{
     const expected=variantText(rule,volume);let match=locatePhrase(expected,words,candidates,label);
+    if(match&&!match.exact&&match.coverage>=35){
+      const code=codeConflict(expected,candidates);
+      if(code){
+       const line=code.word.line==null?code.candidate.words:code.candidate.words.filter(word=>word.line===code.word.line);
+       const focus=line.length?line:code.candidate.words,other=(match.diff||[]).filter(change=>!(change.kind==='missing'&&change.expected.replace(/\D/g,'')===code.wanted.replace(/\D/g,'')));
+       match={...match,method:'code-review',recognizedText:focus.map(word=>word.text).join(' ').replace(/(?<=\d)\s+([.-])\s*(?=\d)/g,'$1'),words:focus,diff:[...other,{kind:'replace',expected:code.wanted,actual:code.actual,confidence:code.confidence}]};
+      }
+    }
     if(/знаки|мебиус|рюмка/i.test(rule.title)||!expected){const notes=dimensionChecks(rule,margin).map(()=>expected?'Размеры графического знака требуют отдельного измерения по оригиналу.':'В столбце 3 не задан текст. Сначала определите применимость раздела и текст для рынка.');return [rule.id,{words:[],exact:false,coverage:0,method:'manual',dimensions:notes.map(()=>null),measurementNotes:notes}];}
-    const quantity=isQuantityRule(rule)?quantityEvidence(rule,expected,words,candidates,label,hasContour):null;
+    let quantity=isQuantityRule(rule)?quantityEvidence(rule,expected,words,candidates,label,hasContour):null;
+    if(quantity&&match?.exact&&['wrong_unit','unreadable'].includes(quantity.status)&&match.words.every(w=>!hasContour||insideLabel(w.box,label))){
+      // A complete caption + value read at one location outranks an unrelated
+      // sugar/nutrition amount. Do not manufacture glyph heights from it.
+      const seen=quantities(match.recognizedText),wanted=expectedQuantity(rule,expected);
+      if(seen.length===1&&quantityComparison(wanted,seen[0])==='match')quantity={...quantity,actual:seen[0],status:'match',words:match.words,numberHeight:null,unitHeight:null,source:'exact-phrase'};
+    }
     const caption=quantity?locatePhrase(rule.title,words,candidates,label):null;
     if(quantity&&caption?.exact&&quantity.status==='match'){
       const found=[...new Set([...caption.words,...quantity.words])];
@@ -140,6 +192,7 @@ export function matchRequirements(rules,words,volume,margin,label,hasContour) {
     const measurementNotes=[];
     const dimensions=dimensionChecks(rule,margin).map(d=>{
       const note=text=>{measurementNotes.push(text);return null;};
+      if(d.target==='partitioned_letters')return note('Разные минимумы относятся к разным строкам. По общей OCR-фразе их нельзя измерять одним числом; проверьте выноску и оригинал отдельно.');
       if(['quantity','quantity_label','date_label','date_digits'].includes(d.target)){
         if(!hasContour||!label)return note('Контур этикетки не определён: печатный участок нельзя отделить от технических образцов.');
         let value=null;

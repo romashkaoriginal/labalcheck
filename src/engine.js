@@ -1,6 +1,6 @@
 import {isQuantityRule,quantities} from './quantity.js';
 import {parseRequirements} from './requirements.js';
-export function normalize(s){return String(s).toLowerCase().replace(/ё/g,'е').replace(/[«»“”"'‘’]/g,'').replace(/[º°]/g,'°').replace(/\s+[–—]\s+(?=\d)/g,' ').replace(/[–—−]/g,'-').replace(/\s+/g,' ').replace(/\s*([,.:;%/()-])\s*/g,'$1').trim();}
+export function normalize(s){return String(s).toLowerCase().replace(/ё/g,'е').replace(/[«»“”"'‘’]/g,'').replace(/[º°]/g,'°').replace(/(^|\s)[–—−-]\s+(?=\d)/g,'$1').replace(/[–—−]/g,'-').replace(/\s+/g,' ').replace(/\s*([,.:;%/()-])\s*/g,'$1').trim();}
 export function compact(s){return normalize(s).replace(/(\d)[,.](?=\d)/g,'$1¤').replace(/-(?=\d)/g,'§').replace(/[^\p{L}\p{N}¤§%°]/gu,'');}
 export function dehyphenate(s){return String(s).replace(/(\p{L})-\s*(?:[<>|{}\[\]]+\s*)?(\p{L})/gu,'$1$2');}
 export function words(s){return (normalize(dehyphenate(s)).match(/-?\d+(?:[,.]\d+)?|[\p{L}]+|[%°]/gu)||[]).map(t=>/^\d+\.\d+$/.test(t)?t.replace('.',','):t).filter(t=>t.length>1||/^[%°лг]$/.test(t));}
@@ -34,8 +34,15 @@ export function dimensionChecks(rule,margin=false){
  else if(/еас/.test(title)&&minimums.length){add('Высота ЕАС',minimums[0]);add('Ширина ЕАС',minimums[0]);}
  else if(isQuantityRule(rule)&&minimums.length){for(const [i,s] of sizes.entries()){const label=/термин|букв|подпис/i.test(s.context)&&!/количество[^;]*$/i.test(s.context),target=label?'quantity_label':/количество|цифр|значени/i.test(s.context)?'quantity':sizes.length>1&&i===0?'quantity_label':'quantity';add(target==='quantity_label'?'Буквы «'+rule.title+'»':'Количество товара',s.min,'мм',target);}}
  else if(/окно.*дат/.test(title)&&minimums.length){for(const [i,s] of sizes.entries()){const target=/цифр/i.test(s.context)||/шрифт самих цифр/i.test(s.after)?'date_digits':/букв|подпис/i.test(s.context)||/шрифт букв/i.test(s.after)?'date_label':i===0?'date_label':'date_digits';add(target==='date_digits'?'Цифры даты / партии':'Буквы подписи даты',s.min,'мм',target);}}
- else if(/не менее/i.test(c)&&minimums.length)add('Высота букв',minimums[0]);
- if(margin)checks=checks.map(x=>({...x,min:x.unit==='мм'&&!/ЕАС/.test(x.label)?Math.round((x.min+.2)*10)/10:x.min}));
+ else if(/не менее/i.test(c)&&minimums.length){
+  for(const [i,size] of sizes.entries()){
+   if(sizes.length===1){add('Высота букв',size.min);continue;}
+   const context=(size.context+' '+size.after).toLowerCase().replace(/ё/g,'е');
+   const label=/срок.*годност/.test(context)?'Срок годности':/остальн.*текст/.test(context)?'Остальной текст':`Высота букв · условие ${i+1}`;
+   add(label,size.min,'мм','partitioned_letters');
+  }
+ }
+ if(margin){const extra=typeof margin==='number'?margin:.2;checks=checks.map(x=>({...x,min:x.unit==='мм'&&!/ЕАС/.test(x.label)?Math.round((x.min+extra)*100)/100:x.min}));}
  return checks;
 }
 export function evaluate(rules,actual,{volume='0,7',margin=false,review={},automatic={}}={}){
@@ -53,7 +60,8 @@ export function evaluate(rules,actual,{volume='0,7',margin=false,review={},autom
   else if(Object.hasOwn(automatic,rule.id)&&comparison.status==='found')comparison={...comparison,status:'all_words',coverage:100,missing:[]};
   const quantity=match?.quantity,date=match?.date;
   const quantityIssue=quantity&&quantity.status!=='match';
-  const statusLabel=quantityIssue?'Проверить количество':dimensions.some(x=>x.estimated&&!x.pass)?'Проверить размеры':dimensions.some(x=>x.borderline)?'Пограничный замер':comparison.status==='uncertain'?'Неуверенное OCR':null;
+  const numericDifference=match?.diff?.some(change=>change.kind==='replace'&&change.confidence>=80&&(/\d/.test(change.expected)&&/\d/.test(change.actual))&&((change.expected.match(/\d+(?:[,.]\d+)*/g)||[]).join('|')!==(change.actual.match(/\d+(?:[,.]\d+)*/g)||[]).join('|')));
+  const statusLabel=quantityIssue?'Проверить количество':numericDifference?'Проверить число':dimensions.some(x=>x.estimated&&!x.pass)?'Проверить размеры':dimensions.some(x=>x.borderline)?'Пограничный замер':comparison.status==='uncertain'?'Неуверенное OCR':null;
   const status=failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':quantityIssue||dimensions.some(x=>x.estimated&&(!x.pass||x.borderline))?'issue':comparison.status==='found'?'detected':comparison.status==='all_words'?'words':actual&&['partial','unreadable','uncertain'].includes(comparison.status)?'issue':'pending';
   return {...rule,expected,comparison,dimensions,state,status,quantity,date,statusLabel:status==='issue'?statusLabel:null};
  });

@@ -14,3 +14,9 @@ test('empty conditional requirement is exempt only with a recorded reason',()=>{
 test('case and line-end hyphenation do not produce a missing word',()=>{const expected='Вода подготовленная (исправленная)';const ocr='ВОДА ПОДГОТОВЛЕННАЯ (ИСПРАВ- <>\nЛЕННАЯ)';assert.equal(compareText(expected,ocr).status,'found');});
 test('all recognized words in separated panels are not called a discrepancy',()=>{const rule={id:'r0',title:'Условия хранения',original:'Хранить плотно закрытым',text:'Хранить плотно закрытым',constraint:''};const result=compareText(rule.text,'ЗАКРЫТЫМ\nХРАНИТЬ\nПЛОТНО');assert.equal(result.status,'all_words');assert.equal(result.coverage,100);assert.equal(evaluate([rule],'ЗАКРЫТЫМ ХРАНИТЬ ПЛОТНО')[0].status,'words');});
 test('OCR uncertainty cannot be promoted to verified compliance',()=>{const rule={id:'r0',title:'Наименование',original:'Водка',text:'Водка',constraint:'не менее 2 мм'};const automatic={r0:{exact:true,dimensions:[2.1]}};assert.equal(evaluate([rule],'Водка',{automatic,review:{r0:{textConfirmed:true,constraintsConfirmed:true}}})[0].status,'detected');});
+test('strong numeric changes are highlighted for review, weak OCR readings remain uncertain',()=>{
+ const rule={id:'r',title:'Срок годности',text:'Срок годности 24 месяца',original:'Срок годности 24 месяца',constraint:''};
+ const match={exact:false,scope:'label',words:[{text:'Срок годности 12 месяца'}],diff:[{kind:'replace',expected:'24',actual:'12',confidence:94}],similarity:.8};
+ assert.equal(evaluate([rule],'Срок годности 12 месяца',{automatic:{r:match}})[0].statusLabel,'Проверить число');
+ assert.notEqual(evaluate([rule],'Срок годности 12 месяца',{automatic:{r:{...match,diff:[{...match.diff[0],confidence:40}]}}})[0].statusLabel,'Проверить число');
+});

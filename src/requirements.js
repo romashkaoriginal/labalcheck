@@ -9,6 +9,15 @@ const constraintMarker=/^(?:требования(?: к (?:размерам|ма�
 const sectionMarker=/^(?:раздел|элемент маркировки|показатель)\s*:\s*(.+)$/i;
 const sizeSentence=s=>/(?:не менее|не более|минимальн|максимальн|высота шрифта|размер букв)/i.test(s)&&/\d\s*(?:мм|см|%|mm|cm)/i.test(s);
 
+export function suggestedHeightMargin(conditions){
+ for(const sentence of conditions||[]){
+  if(!/увеличива\w*|запас/i.test(sentence)||!/высот|шрифт|размер/i.test(sentence))continue;
+  const match=sentence.match(/(?:на|плюс|\+)\s*(\d+(?:[,.]\d+)?)\s*мм/i);
+  if(match){const amount=Number(match[1].replace(',','.'));if(amount>0&&amount<=1)return amount;}
+ }
+ return null;
+}
+
 export function parseRequirements(source){
  const rules=[],diagnostics=[],globalConditions=[];
  const add=(title,constraint,text,extra=false,review=false)=>{if(!clean(title)&&!clean(text)&&!clean(constraint))return;rules.push({id:'r'+rules.length,title:clean(title)||'Раздел '+(rules.length+1),constraint:clean(constraint),original:clean(text),text:clean(text),extra,sourceReview:review});};
@@ -27,7 +36,9 @@ export function parseRequirements(source){
   for(const row of table.slice(start)){
    if(row.every(s=>!clean(s))||row.slice(0,3).map(clean).join('|')==='1|2|3'||row.every(s=>/^[a-z]$/i.test(clean(s))))continue;
    const text=clean(row[columns.text]),constraint=clean(row[columns.constraint]);
-   add(columns.title<0?text.slice(0,65):row[columns.title],constraint,text);
+   const title=columns.title<0?text.slice(0,65):row[columns.title];
+   if(!text){diagnostics.push(`«${clean(title)||`Строка ${rules.length+1}`}»: в столбце текста нет обязательной надписи; проверьте, применяется ли этот раздел.`);}
+   add(title,constraint,text,false,!text);
   }
  }
  const paragraphs=(source.blocks?.filter(b=>b.type==='paragraph')|| (source.paragraphs||[]).map(text=>({text}))).flatMap(p=>String(p.text||'').split('\n').map(text=>({...p,text}))).filter(p=>clean(p.text));

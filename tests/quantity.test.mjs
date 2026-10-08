@@ -21,11 +21,38 @@ test('column 2 quantity example never overrides the expected quantity or column 
  assert.deepEqual(dimensionChecks(volume).map(d=>d.min),[2,4]);
  assert.deepEqual(dimensionChecks({...volume,constraint:'Буквы 0,2 см; количество 0,4 cm'}).map(d=>d.min),[2,4]);
 });
+test('quantity belongs to its printed caption even when nearby sugar has higher OCR confidence',()=>{
+ const rule={id:'v',title:'Объем',text:'Объем 0,75 л',original:'Объем 0,75 л',constraint:''};
+ const line=[['Сахар',.10],['75',.21],['г',.26],['Объем',.35],['0,75',.47],['л',.56]].map(([text,x])=>word(text,x));
+ line[1].confidence=99;line[2].confidence=99;line[4].confidence=87;line[5].confidence=87;
+ assert.equal(matchRequirements([rule],line,'0,75',false,label,true).v.quantity.status,'match');
+ assert.equal(matchRequirements([rule],line,'0,75',false,label,true).v.quantity.actual.text,'0,75 л');
+ const changed=line.map(w=>({...w}));changed[4].text='0,7';
+ assert.equal(matchRequirements([rule],changed,'0,75',false,label,true).v.quantity.status,'wrong_value');
+});
+test('an exact printed caption and amount outrank an unrelated sugar amount in one OCR word',()=>{
+ const rule={id:'v',title:'Объем',text:'Объем 0,75 л',original:'Объем 0,75 л',constraint:''};
+ const sugar=[word('Сахар',.1),word('75',.22),word('г',.27)];
+ const merged={...word('Объем 0,75 л',.4),confidence:74};
+ const result=matchRequirements([rule],[...sugar,{...merged,pass:'weak-a'},{...merged,pass:'weak-b'}],'0,75',false,label,true).v;
+ assert.equal(result.quantity.status,'match');assert.equal(result.quantity.actual.text,'0,75 л');
+ assert.equal(result.quantity.source,'exact-phrase');
+ assert.equal(result.quantity.numberHeight,null);
+ const wrong=matchRequirements([rule],[...sugar,{...merged,text:'Объем 0,7 л',pass:'weak-a'},{...merged,text:'Объем 0,7 л',pass:'weak-b'}],'0,75',false,label,true).v;
+ assert.notEqual(wrong.quantity.status,'match');
+});
 test('mixed-size quantity is matched independently of caption and measured including the unit',()=>{
  const words=[word('ОБЪЕМ',.1,.1,2.1),word('0,7',.4,.3,4.2),word('Л',.46,.3,3)];
  const match=matchRequirements([volume],words,'0,7',false,label,true).v;
  assert.equal(match.exact,true);assert.equal(match.quantity.status,'match');assert.equal(match.quantity.numberHeight,4.2);assert.equal(match.quantity.unitHeight,3);
  assert.deepEqual(match.dimensions,[2.1,3]);const row=evaluate([volume],'ОБЪЕМ 0,7 Л',{automatic:{v:match}})[0];assert.equal(row.status,'issue');assert.equal(row.statusLabel,'Проверить размеры');
+});
+test('a separately verified quantity retains an approximate low-confidence unit measurement',()=>{
+ const printed=[word('ОБЪЕМ',.1,.1,2.1),word('0,7',.4,.3,4.2),{...word('Л',.46,.3,3.1),confidence:76}];
+ const match=matchRequirements([volume],printed,'0,7',false,label,true).v;
+ assert.equal(match.quantity.status,'match');
+ assert.equal(match.quantity.unitHeight,3.1);
+ assert.equal(match.dimensions[1],3.1);
 });
 test('quantity below the right value, missing unit and ambiguous numbers are not accepted',()=>{
  const read=words=>matchRequirements([volume],words,'0,7',false,label,true).v.quantity;
