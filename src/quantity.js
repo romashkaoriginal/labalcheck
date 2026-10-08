@@ -72,9 +72,11 @@ export function dateEvidence(match,words,label,hasContour){
 // Coordinates come from the artwork, not a fixed label template.
 export function quantityReadAreas(words,label,hasContour){
  const anchors=words.filter(w=>(w.confidence??0)>=80&&(!hasContour||inside(w.box,label))&&/^(?:об[ъь]?[её]м|масса(?: нетто)?)$/i.test(w.text.trim())),areas=[];
- for(const word of anchors){if(word.rotation)continue;const b=word.box;
+ for(const word of anchors){const rotation=word.rotation||0,aspect=rotation?word.pageAspect||1:1,b=rotation?readingRect(word,rotation):word.box;
   for(const box of [{x:b.x-b.h*.2,y:b.y+b.h,w:b.w+b.h*.4,h:b.h*2.35},{x:b.x+b.w,y:b.y-b.h*.5,w:b.w*1.5,h:b.h*2.1}]){
-   const area={x:Math.max(0,box.x),y:Math.max(0,box.y),w:Math.min(box.w,1-Math.max(0,box.x)),h:Math.min(box.h,1-Math.max(0,box.y)),rotation:0,lineCount:1};
+   const r=rotation===90?{x:box.y/aspect,y:1-box.x-box.w,w:box.h/aspect,h:box.w}:rotation===180?{x:1-(box.x+box.w)/aspect,y:1-box.y-box.h,w:box.w/aspect,h:box.h}:rotation===270?{x:1-(box.y+box.h)/aspect,y:box.x,w:box.h/aspect,h:box.w}:{x:box.x/aspect,y:box.y,w:box.w/aspect,h:box.h};
+   const x=Math.max(0,r.x),y=Math.max(0,r.y),area={x,y,w:Math.min(1,r.x+r.w)-x,h:Math.min(1,r.y+r.h)-y,rotation,lineCount:1};
+   if(area.w<=0||area.h<=0)continue;
    if(hasContour&&!inside(area,label)||areas.some(a=>Math.abs(a.x-area.x)<.003&&Math.abs(a.y-area.y)<.003))continue;areas.push(area);
   }
  }

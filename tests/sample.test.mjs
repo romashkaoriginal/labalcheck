@@ -26,3 +26,13 @@ test('sample dimensions retain actual risks instead of converting found text to 
  assert.equal(rows[15].dimensions[1].value,null);assert.match(rows[15].dimensions[1].reason,/пустого окна/);
  assert.ok(rows[14].dimensions.every(d=>d.value===null&&d.reason));
 });
+
+test('fresh line rereads preserve all sections, real quantities and date targets without claiming approval',()=>{
+ const fresh=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/sample-lines-ocr.json.gz',import.meta.url)))),automatic=matchRequirements(fresh.rules,fresh.words,'0,7',false,fresh.label,true),result=evaluate(fresh.rules,fresh.actual,{automatic});
+ assert.equal(result.length,17);assert.equal(result.filter(r=>r.comparison.status==='found').length,8);assert.equal(result.filter(r=>r.comparison.status==='uncertain').length,6);
+ assert.ok(result.every(r=>r.status!=='pass'));assert.equal(result[11].quantity.status,'match');assert.equal(result[11].quantity.actual.value,.7);assert.ok(result[11].dimensions[1].value<4);
+ assert.equal(result[8].dimensions[0].meta.method,'rectangle');assert.ok(result[8].dimensions[0].value>7&&result[8].dimensions[0].value<8);
+ assert.equal(result[15].dimensions[0].target,'date_label');assert.ok(result[15].dimensions[0].value>=.8);assert.equal(result[15].dimensions[1].value,null);assert.match(result[15].dimensions[1].reason,/пустого окна/);
+ assert.ok(result[2].dimensions[0].meta.pixelStep>.03);assert.ok(result[2].dimensions[0].borderline);
+ assert.ok(fresh.words.some(w=>w.pass?.startsWith('baselines')));
+});

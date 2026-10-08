@@ -59,7 +59,7 @@ export function orderedTextCandidates(words,combine=true){
  return all;
 }
 
-function pageReadingBox(box,rotation,aspect){
+export function pageReadingBox(box,rotation,aspect){
  const {x,y,w,h}=box;
  if(rotation===90)return {x:1-y-h,y:x*aspect,w:h,h:w*aspect};
  if(rotation===180)return {x:(1-x-w)*aspect,y:1-y-h,w:w*aspect,h};
@@ -95,7 +95,7 @@ function consensusWords(words){
  }
  return result;
 }
-const tokenOption=(token,value)=>!token.uncertainValues&&token.options?.find(option=>option.value===value);
+const tokenOption=(token,value)=>!token.uncertainValues&&token.options?.find(option=>option.value===value&&(!/^-?\d/.test(value)||option.support>=2||option.words.every(w=>(w.confidence??100)>=75)));
 
 function exactIn(target,candidate,excluded=[]){
  for(let start=0;start<=candidate.tokens.length-target.length;start++){
@@ -116,7 +116,8 @@ function exactMatch(target,candidates,label,excluded=[]){
 
 // Semi-global alignment searches a phrase inside a larger paragraph and keeps
 // substitutions, omitted tokens and additional tokens visible to the operator.
-const lookalike=(a,b)=>a.length===b.length&&a!==b&&[...a].every((x,i)=>x===b[i]||(/[оo0]/u.test(x)&&/[оo0]/u.test(b[i]))||(/[ий]/u.test(x)&&/[ий]/u.test(b[i])));
+const confusionGroups=['оo0','ий','дл','аa','еe','сc','рp'];
+const lookalike=(a,b)=>a.length===b.length&&a!==b&&[...a].every((x,i)=>x===b[i]||confusionGroups.some(group=>group.includes(x)&&group.includes(b[i])));
 function align(target,candidate){
  const actual=candidate.tokens,m=target.length,n=actual.length,stride=n+1,step=m+1,grid=new Int32Array((m+1)*stride);
  // A secondary reward for exact tokens breaks edit-distance ties in favour of
@@ -181,4 +182,26 @@ export function refinementAreas(matches){
   areas.push({...area,lineCount:match.lineCount,priority:match.method==='words'?2:match.rotation%180?1:0});
  }
  return areas.sort((a,b)=>(b.priority||0)-(a.priority||0)).slice(0,8).map(({priority,...area})=>area);
+}
+
+// OCR coordinates supply baselines when a neighbouring vertical inscription
+// prevents an ink projection from finding whitespace between paragraph rows.
+export function refinementLines(matches){
+ const areas=[];
+ const visit=match=>{
+  if(match?.parts){match.parts.forEach(visit);return;}
+  if(!match||match.exact||match.coverage<45||match.words.length<2)return;
+  const rotation=match.rotation??match.words[0].rotation??0,items=match.words.filter(w=>(w.rotation||0)===rotation&&(w.confidence??0)>=35),height=median(items.map(w=>rotation%180?w.box.w:w.box.h));
+  const lines=[];
+  for(const word of items){const b=word.box,h=rotation%180?b.w:b.h,center=rotation%180?b.x+b.w/2:b.y+b.h/2;
+   if(h>height*2||h<height*.45)continue;
+   let line=lines.find(l=>Math.abs(l.center-center)<height*.6);
+   if(!line){line={center,words:[]};lines.push(line);}line.words.push(word);
+  }
+  for(const line of lines){if(line.words.length<2)continue;const b=bounds(line.words),char=median(line.words.map(w=>(rotation%180?w.box.h:w.box.w)/Math.max(1,w.text.length))),px=rotation%180?height*.22:char*1.2,py=rotation%180?char*1.2:height*.22,x=Math.max(0,b.x-px),y=Math.max(0,b.y-py);
+   const area={x,y,w:Math.min(1,b.x+b.w+px)-x,h:Math.min(1,b.y+b.h+py)-y,rotation,lineCount:1};
+   if(!areas.some(a=>a.rotation===rotation&&sameLocation(a,area)))areas.push(area);
+  }
+ };
+ Object.values(matches).forEach(visit);return areas.slice(0,120);
 }
