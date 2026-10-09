@@ -27,6 +27,8 @@ try{
  const page=await browser.newPage(),errors=[];
  page.on('pageerror',error=>errors.push(error.message));
  await page.goto(`http://127.0.0.1:${server.address().port}/?audit`);
+ await page.locator('[data-tab="requirements"]').click();
+ await page.locator('#restore-sample').click();
  await page.waitForFunction(()=>document.querySelectorAll('button.rule-row').length===17,{},{timeout:30000});
  await page.locator('#recognize').click();
  await page.waitForFunction(()=>{const button=document.querySelector('#recognize');return button&&!button.disabled&&button.textContent.includes('Проверить ещё раз');},{},{timeout:300000});
