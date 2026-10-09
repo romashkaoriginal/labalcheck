@@ -42,17 +42,23 @@ function components({cls,hue,width,height},value,x0=0,y0=0,x1=width,y1=height){
  return out;
 }
 // A stroke crossing a shape from edge to edge, thinner than any letter stem.
-function hairline({cls,width},c){
+function hairline({cls,width},c,value=CHROMA){
  for(const horizontal of [true,false]){
   const length=horizontal?c.x1-c.x0:c.y1-c.y0,depth=horizontal?c.y1-c.y0:c.x1-c.x0;let thick=0,best=0;
   for(let b=0;b<depth;b++){
    let run=0,longest=0;
-   for(let a=0;a<length;a++){const x=horizontal?c.x0+a:c.x0+b,y=horizontal?c.y0+b:c.y0+a;run=cls[y*width+x]===CHROMA?run+1:0;if(run>longest)longest=run;}
+   for(let a=0;a<length;a++){const x=horizontal?c.x0+a:c.x0+b,y=horizontal?c.y0+b:c.y0+a;run=cls[y*width+x]===value?run+1:0;if(run>longest)longest=run;}
    if(longest>=length*.8){thick++;if(thick>best)best=thick;}else thick=0;
   }
   if(best&&best<=Math.max(1,length*.07)&&depth>best*2)return true;
  }
  return false;
+}
+// A straight stroke from corner to corner of a shape: ink all along one of
+// its diagonals. A digit drawn with thin strokes has as little ink, but not there.
+function slanted({cls,width,height},c,value=CHROMA){
+ const w=c.x1-c.x0-1,h=c.y1-c.y0-1,inked=(x,y)=>{for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++){const xx=Math.round(x)+dx,yy=Math.round(y)+dy;if(xx>=0&&yy>=0&&xx<width&&yy<height&&cls[yy*width+xx]===value)return true;}return false;};
+ return [false,true].some(rising=>[.1,.3,.5,.7,.9].every(t=>inked(c.x0+w*t,rising?c.y1-1-h*t:c.y0+h*t)));
 }
 const span=(a,axis)=>axis==='x'?a.x1-a.x0:a.y1-a.y0;
 const gapOn=(a,b,axis)=>axis==='x'?Math.max(0,a.x0-b.x1,b.x0-a.x1):Math.max(0,a.y0-b.y1,b.y0-a.y1);
@@ -64,15 +70,22 @@ const median=values=>{const s=[...values].sort((a,b)=>a-b);return s.length?s[Mat
 // Glyphs of one callout sit on one line. Lines are grown separately for
 // horizontal and quarter-turned text, so two callouts written side by side in
 // different directions never merge into one reading.
-export function findCalloutClusters(ink,{avoid=[]}={}){
- const {width,height}=ink,unit=Math.max(width,height)/1000,maxGlyph=22*unit;
- const glyphs=components(ink,CHROMA).filter(c=>{
+// `dark`: callouts written in the black of the text itself. They cannot be told
+// from text by colour, so only short lines that stand alone and have a thin
+// stroke of the same ink beside them (ticks, a leader line) are offered; what
+// they say decides later whether they are size statements at all.
+export function findCalloutClusters(ink,{avoid=[],dark=false}={}){
+ const {width,height}=ink,unit=Math.max(width,height)/1000,maxGlyph=22*unit,value=dark?DARK:CHROMA,strokes=[];
+ const glyphs=components(ink,value).filter(c=>{
   const w=c.x1-c.x0,h=c.y1-c.y0,long=Math.max(w,h),short=Math.min(w,h);
-  if(long>maxGlyph||c.area<2)return false;
+  if(c.area<2)return false;
   // Leader lines and dashes are thin and long; they are pointers, not digits.
-  if(short<=Math.max(2,unit)&&long>=6*short&&long>=4*unit)return false;
+  if(short<=Math.max(2,unit)&&long>=6*short&&long>=4*unit){strokes.push(c);return false;}
   // So is a dimension tick with its arrow: a hairline spanning a mostly empty shape.
-  if(long>=6*unit&&c.area<w*h*.22&&hairline(ink,c))return false;
+  if(long>=6*unit&&c.area<w*h*.22&&hairline(ink,c,value)){strokes.push(c);return false;}
+  // Larger than any sign of a callout. A leader drawn at an angle is such a
+  // shape: little ink, all of it along the diagonal of its box.
+  if(long>maxGlyph){if(c.area<=Math.hypot(w,h)*Math.max(3,unit*1.5)*1.6&&slanted(ink,c,value))strokes.push(c);return false;}
   const cx=(c.x0+c.x1)/2/width,cy=(c.y0+c.y1)/2/height;
   return !avoid.some(b=>cx>=b.x&&cx<=b.x+b.w&&cy>=b.y&&cy<=b.y+b.h);
  });
@@ -103,15 +116,25 @@ export function findCalloutClusters(ink,{avoid=[]}={}){
   return [...groups.values()];
  };
  const candidates=[...lines('x').map(items=>({items,vertical:false})),...lines('y').map(items=>({items,vertical:true}))].sort((a,b)=>b.items.length-a.items.length);
- const taken=new Set(),clusters=[];
+ const taken=new Set(),clusters=[],pairs=[];
  for(const candidate of candidates){
-  const items=candidate.items.filter(i=>!taken.has(i));if(items.length<3)continue;
+  const items=candidate.items.filter(i=>!taken.has(i));if(items.length===2)pairs.push({items,vertical:candidate.vertical});if(items.length<3)continue;
   const parts=items.map(i=>glyphs[i]),box=union(parts),along=candidate.vertical?box.y1-box.y0:box.x1-box.x0,acrossSize=candidate.vertical?box.x1-box.x0:box.y1-box.y0;
   if(along<acrossSize*1.6||acrossSize<5||items.length>110)continue;
   items.forEach(i=>taken.add(i));
   const sizes=parts.map(c=>candidate.vertical?c.x1-c.x0:c.y1-c.y0).sort((a,b)=>a-b);
   let hs=0,hc=0;for(const c of parts){hs+=Math.sin(c.hue*Math.PI/90)*c.area;hc+=Math.cos(c.hue*Math.PI/90)*c.area;}
-  clusters.push({...box,vertical:candidate.vertical,glyphs:parts,count:parts.length,size:sizes[Math.floor(sizes.length*.75)],hue:(Math.atan2(hs,hc)*90/Math.PI+180)%180});
+  clusters.push({...box,vertical:candidate.vertical,glyphs:parts,count:parts.length,size:sizes[Math.floor(sizes.length*.75)],hue:(Math.atan2(hs,hc)*90/Math.PI+180)%180,...(dark?{dark:true}:{})});
+ }
+ // Two signs alone are no statement, but they may be its second line ("mm"
+ // under the number): a pair right under or over a line of the same ink and size.
+ for(const pair of pairs){
+  if(pair.items.some(i=>taken.has(i)))continue;
+  const parts=pair.items.map(i=>glyphs[i]),box=union(parts),across=pair.vertical?'x':'y',along=pair.vertical?'y':'x',size=Math.max(...parts.map(c=>span(c,across)));
+  let hs=0,hc=0;for(const c of parts){hs+=Math.sin(c.hue*Math.PI/90)*c.area;hc+=Math.cos(c.hue*Math.PI/90)*c.area;}const tone=(Math.atan2(hs,hc)*90/Math.PI+180)%180;
+  if(!clusters.some(c=>c.vertical===pair.vertical&&hueGap(c.hue,tone)<=HUE_TOLERANCE&&Math.max(c.size,size)<=Math.min(c.size,size)*1.6&&gapOn(c,box,across)<=Math.max(c.size,size)*1.1&&overlapOn(c,box,along)>=span(box,along)*.4))continue;
+  pair.items.forEach(i=>taken.add(i));
+  clusters.push({...box,vertical:pair.vertical,glyphs:parts,count:2,size,hue:tone,...(dark?{dark:true}:{})});
  }
  // Words of one statement stand on one line with ordinary spaces between them.
  for(let merged=true;merged;){
@@ -120,8 +143,15 @@ export function findCalloutClusters(ink,{avoid=[]}={}){
    const a=clusters[i],b=clusters[j];if(a.vertical!==b.vertical||hueGap(a.hue,b.hue)>HUE_TOLERANCE)continue;
    const axis=a.vertical?'y':'x',across=a.vertical?'x':'y',size=Math.max(a.size,b.size);
    if(Math.min(a.size,b.size)<size*.75||overlapOn(a,b,across)<Math.min(span(a,across),span(b,across))*.7||gapOn(a,b,axis)>size*1.6)continue;
-   const glyphs=[...a.glyphs,...b.glyphs];clusters[i]={...union([a,b]),vertical:a.vertical,glyphs,count:glyphs.length,size,hue:a.count>=b.count?a.hue:b.hue};clusters.splice(j,1);merged=true;break outer;
+   const glyphs=[...a.glyphs,...b.glyphs];clusters[i]={...union([a,b]),vertical:a.vertical,glyphs,count:glyphs.length,size,hue:a.count>=b.count?a.hue:b.hue,...(dark?{dark:true}:{})};clusters.splice(j,1);merged=true;break outer;
   }
+ }
+ if(dark){
+  // A size statement is a few signs long. A line of a paragraph has lines of
+  // its own size right above or below it; a statement stands by itself, and
+  // a pointer of its own ink is drawn beside it.
+  const stacked=(a,b)=>a!==b&&a.vertical===b.vertical&&Math.max(a.size,b.size)<=Math.min(a.size,b.size)*1.5&&gapOn(a,b,a.vertical?'x':'y')<=Math.max(a.size,b.size)*1.1&&overlapOn(a,b,a.vertical?'y':'x')>=Math.min(span(a,a.vertical?'y':'x'),span(b,a.vertical?'y':'x'))*.5;
+  return clusters.filter(c=>c.count<=16&&!clusters.some(other=>stacked(c,other)&&other.count>16)&&strokes.some(stroke=>stroke.area/Math.hypot(stroke.x1-stroke.x0,stroke.y1-stroke.y0)<=Math.max(3,c.size*.25)&&boxGap(c,stroke)<=c.size*3)).sort((a,b)=>a.y0-b.y0||a.x0-b.x0);
  }
  return clusters.sort((a,b)=>a.y0-b.y0||a.x0-b.x0);
 }
@@ -168,8 +198,15 @@ export function parseClaim(text){
  const clean=String(text||'').replace(/\s+/g,' ').replace(/(\d)\s*([.,])\s*(?=\d)/g,'$1$2').trim();if(!clean)return null;
  const percent=clean.match(percentPattern);
  if(percent&&/площад|этикетк|(?:^|\s)S(?:\s|$)/iu.test(clean)){
-  const areas=[...clean.matchAll(/(\d{1,5}(?:[.,]\d{1,2})?)\s*(?:мм|mm)\s*[²2*?°]/giu)].map(m=>number(m[1]));
-  return {kind:'percent',value:number(percent[2]),comparator:comparator(percent[1]),areas,raw:clean};
+  // The raised 2 of "мм²" comes out of OCR as ?, ", ” or 2.
+  const stated=[...clean.matchAll(/(\d{1,5}(?:[.,]\d{1,2})?)\s*(?:мм|mm)\s*[²2*?°"”“'’`]/giu)].map(m=>({value:number(m[1]),bracketed:/\(\s*$/.test(clean.slice(0,m.index))}));
+  // "S надписи = A мм² > P % от S этикетки, исключая X (B мм²)": the area of
+  // the inscription, the part of the label left out of the base, and in
+  // brackets the area that P % of that base amounts to.
+  const inscription=stated.find(area=>!area.bracketed),threshold=stated.find(area=>area.bracketed&&area!==inscription);
+  const exclusion=clean.match(/исключа\p{L}*\s+([^()\d]{3,60}?)\s*(?:\(|$)/iu)?.[1].trim()||'';
+  const formula=inscription||threshold||exclusion?{inscription:inscription?.value??null,threshold:threshold?.value??null,exclusion}:null;
+  return {kind:'percent',value:number(percent[2]),comparator:comparator(percent[1]),areas:stated.map(area=>area.value),...(formula?{formula}:{}),raw:clean};
  }
  const box=clean.match(boxPattern);
  if(box)return plausible(box[1],400)&&plausible(box[2],400)?{kind:'box',values:[number(box[1]),number(box[2])],raw:clean}:{kind:'unreadable',raw:clean};
@@ -191,10 +228,10 @@ export function separatorCount(cluster){
 export const claimMarks=claim=>['box','height'].includes(claim?.kind)?(claim.raw.match(/\d[.,]\d/g)||[]).length:0;
 
 // ---- the pointer: dimension ticks or leader lines beside the callout -------
-export function strokeSegments(ink,region,hue,blocked,axis,minLength,maxThick){
+export function strokeSegments(ink,region,hue,blocked,axis,minLength,maxThick,dark=false){
  const {cls,width}=ink,found=[],runs=[],horizontal=axis==='x';
  const a0=horizontal?region.x0:region.y0,a1=horizontal?region.x1:region.y1,b0=horizontal?region.y0:region.x0,b1=horizontal?region.y1:region.x1;
- const on=(a,b)=>{const x=horizontal?a:b,y=horizontal?b:a,p=y*width+x;if(cls[p]!==CHROMA||hueGap(ink.hue[p],hue)>HUE_TOLERANCE)return false;return !blocked.some(r=>x>=r.x0&&x<r.x1&&y>=r.y0&&y<r.y1);};
+ const on=(a,b)=>{const x=horizontal?a:b,y=horizontal?b:a,p=y*width+x;if(dark?cls[p]!==DARK:cls[p]!==CHROMA||hueGap(ink.hue[p],hue)>HUE_TOLERANCE)return false;return !blocked.some(r=>x>=r.x0&&x<r.x1&&y>=r.y0&&y<r.y1);};
  for(let b=b0;b<b1;b++){let start=-1;for(let a=a0;a<=a1;a++){const inked=a<a1&&on(a,b);if(inked){if(start<0)start=a;}else if(start>=0){if(a-start>=minLength)runs.push({b,a0:start,a1:a});start=-1;}}}
  for(const run of runs){
   const previous=found.find(s=>run.b-s.b1<=1&&Math.min(s.a1,run.a1)-Math.max(s.a0,run.a0)>=Math.min(s.a1-s.a0,run.a1-run.a0)*.6);
@@ -205,7 +242,12 @@ export function strokeSegments(ink,region,hue,blocked,axis,minLength,maxThick){
  // its real ends, or the inscription it leads to is never reached.
  const limit=horizontal?width:ink.height,inked=(a,s)=>{for(let b=s.b0;b<s.b1;b++)if(on(a,b))return true;return false;};
  for(const s of found){while(s.a1<limit&&inked(s.a1,s))s.a1++;while(s.a0>0&&inked(s.a0-1,s))s.a0--;}
- return found.filter(s=>s.b1-s.b0<=maxThick).map(s=>horizontal?{x0:s.a0,x1:s.a1,y0:s.b0,y1:s.b1}:{y0:s.a0,y1:s.a1,x0:s.b0,x1:s.b1});
+ const segments=found.filter(s=>s.b1-s.b0<=maxThick).map(s=>horizontal?{x0:s.a0,x1:s.a1,y0:s.b0,y1:s.b1}:{y0:s.a0,y1:s.a1,x0:s.b0,x1:s.b1});
+ if(!dark)return segments;
+ // In the ink of the text a bar of a letter is a thin run too. A tick or a
+ // leader is a shape of its own: thin all over, or a hairline with its arrow.
+ const pad=Math.round(maxThick*4),x0=Math.max(0,region.x0-pad),y0=Math.max(0,region.y0-pad),x1=Math.min(width,region.x1+pad),y1=Math.min(ink.height,region.y1+pad),shapes=components(ink,DARK,x0,y0,x1,y1);
+ return segments.filter(s=>{const shape=shapes.find(c=>c.x0<=s.x0&&c.x1>=Math.min(s.x1,x1)&&c.y0<=s.y0&&c.y1>=Math.min(s.y1,y1));if(!shape)return false;const w=shape.x1-shape.x0,h=shape.y1-shape.y0;return Math.min(w,h)<=maxThick*1.5||shape.area<w*h*.22&&hairline(ink,shape,DARK);});
 }
 // Two parallel thin strokes bound the measured glyphs. `type:'height'` strokes
 // are horizontal and bound a horizontal line of text; `type:'width'` strokes
@@ -216,7 +258,7 @@ export function findGauges(ink,clusters){
   const s=cluster.size,reach=3*s,region={x0:Math.max(0,Math.floor(cluster.x0-reach)),y0:Math.max(0,Math.floor(cluster.y0-reach)),x1:Math.min(width,Math.ceil(cluster.x1+reach)),y1:Math.min(height,Math.ceil(cluster.y1+reach))};
   const minLength=Math.max(6,Math.round(s*.4)),maxThick=Math.max(3,Math.round(s*.2));
   for(const [type,axis,across] of [['height','x','y'],['width','y','x']]){
-   const lines=strokeSegments(ink,region,cluster.hue,clusters,axis,minLength,maxThick);
+   const lines=strokeSegments(ink,region,cluster.hue,clusters,axis,minLength,maxThick,!!cluster.dark);
    for(let i=0;i<lines.length;i++)for(let j=i+1;j<lines.length;j++){
     const [first,second]=lines[i][across+'0']<=lines[j][across+'0']?[lines[i],lines[j]]:[lines[j],lines[i]];
     const distance=second[across+'0']-first[across+'1'],shared=overlapOn(first,second,axis);
@@ -301,7 +343,58 @@ function lineBoxes(probe,vertical,hit,direction,c0,c1,wide,tone,limit){
  const same=['x0','x1','y0','y1'].every(k=>Math.abs(box[k]-tight[k])<=2);
  return {...box,tight:same?null:tight};
 }
-export function findTarget(ink,cluster,gauge,{mark=false}={}){
+// A leader line: one thin stroke that starts beside the callout and ends at
+// what the callout is about, drawn at any angle. Returns the far end.
+export function findLeader(ink,cluster,clusters=[]){
+ const {cls,hue,width,height}=ink,s=cluster.size,value=cluster.dark?DARK:CHROMA,reach=Math.round(s*2);
+ const x0=Math.max(0,Math.floor(cluster.x0-reach)),y0=Math.max(0,Math.floor(cluster.y0-reach)),x1=Math.min(width,Math.ceil(cluster.x1+reach)),y1=Math.min(height,Math.ceil(cluster.y1+reach));
+ const own=(x,y)=>{const p=y*width+x;return cls[p]===value&&(cluster.dark||hueGap(hue[p],cluster.hue)<=HUE_TOLERANCE);};
+ // Shapes that begin within reach of the callout are followed to their real
+ // extent: a leader runs far beyond the neighbourhood it starts in.
+ const seen=new Set();let best=null;
+ for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){
+  if(!own(x,y)||seen.has(y*width+x)||clusters.some(c=>x>=c.x0&&x<c.x1&&y>=c.y0&&y<c.y1))continue;
+  const stack=[y*width+x],points=[];seen.add(y*width+x);let bx0=x,bx1=x,by0=y,by1=y;
+  while(stack.length&&points.length<200000){
+   const p=stack.pop(),px=p%width,py=(p-px)/width;points.push(p);if(px<bx0)bx0=px;if(px>bx1)bx1=px;if(py<by0)by0=py;if(py>by1)by1=py;
+   for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const qx=px+dx,qy=py+dy;if(qx<0||qy<0||qx>=width||qy>=height)continue;const q=qy*width+qx;if(seen.has(q)||!own(qx,qy)||clusters.some(c=>qx>=c.x0&&qx<c.x1&&qy>=c.y0&&qy<c.y1))continue;seen.add(q);stack.push(q);}
+  }
+  const w=bx1-bx0+1,h=by1-by0+1,length=Math.hypot(w,h);
+  // A line: long, and no more ink than a thin stroke along its diagonal.
+  if(length<s*2||points.length>length*Math.max(3,s*.3)*1.6)continue;
+  // Its two ends are the points furthest apart along its longer side.
+  const wide=w>=h,key=p=>wide?p%width:(p-p%width)/width,low=Math.min(...points.map(key)),high=Math.max(...points.map(key));
+  const end=at=>{const group=points.filter(p=>Math.abs(key(p)-at)<=1);return {x:group.reduce((n,p)=>n+p%width,0)/group.length,y:group.reduce((n,p)=>n+(p-p%width)/width,0)/group.length};};
+  const ends=[end(low),end(high)],away=point=>Math.hypot(Math.max(0,cluster.x0-point.x,point.x-cluster.x1),Math.max(0,cluster.y0-point.y,point.y-cluster.y1));
+  ends.sort((a,b)=>away(a)-away(b));
+  if(away(ends[0])>s*1.5||away(ends[1])<s*1.5)continue;
+  // Drawn from end to end, straight or with one bend: the outline of a panel
+  // or of the label has its ends close together and nothing between them.
+  const inked=new Set(points),near=(x,y)=>{for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++)if(inked.has(Math.round(y+dy)*width+Math.round(x+dx)))return true;return false;};
+  if([.25,.5,.75].filter(t=>near(ends[0].x+(ends[1].x-ends[0].x)*t,ends[0].y+(ends[1].y-ends[0].y)*t)).length<2)continue;
+  if(!best||away(ends[0])<best.near)best={near:away(ends[0]),tip:ends[1],from:ends[0],length};
+ }
+ return best;
+}
+// The line of print a point on the sheet lies at: the nearest letter, and the
+// run of letters it stands in.
+function lineAt(ink,point,cluster,clusters){
+ const s=cluster.size,r=Math.round(s*1.6),x0=Math.max(0,Math.round(point.x-r)),y0=Math.max(0,Math.round(point.y-r)),x1=Math.min(ink.width,Math.round(point.x+r)),y1=Math.min(ink.height,Math.round(point.y+r));
+ // In the black of the text the leader itself is dark ink at its own end: a thin stroke is not a letter.
+ const thin=c=>{const w=c.x1-c.x0,h=c.y1-c.y0;return Math.max(w,h)>=s&&c.area<=Math.hypot(w,h)*Math.max(3,s*.3)*1.6;};
+ const letters=components(ink,DARK,x0,y0,x1,y1).filter(c=>c.area>=4&&!thin(c)&&!clusters.some(other=>c.x0<other.x1&&c.x1>other.x0&&c.y0<other.y1&&c.y1>other.y0));
+ if(!letters.length)return null;
+ const far=c=>Math.hypot(Math.max(0,c.x0-point.x,point.x-c.x1),Math.max(0,c.y0-point.y,point.y-c.y1)),letter=letters.sort((a,b)=>far(a)-far(b))[0];
+ // Upright unless the letters around stand one above another.
+ let best=null;
+ for(const vertical of [false,true]){
+  const probe=inkProbe(ink,vertical),c0=vertical?letter.x0:letter.y0,c1=vertical?letter.x1:letter.y1,band=c1-c0,hit=vertical?letter.y0:letter.x0,wide=Math.max(4,Math.round(band*1.6)),limit=Math.round(band*.25);
+  const ahead=lineBox(probe,vertical,hit,1,c0,c1,wide,cluster.hue,limit),back=lineBox(probe,vertical,hit,-1,c0,c1,wide,cluster.hue,limit),box=union([ahead,back]),along=vertical?box.y1-box.y0:box.x1-box.x0;
+  if(!best||along>best.along)best={...box,vertical,via:'leader',gap:far(letter),band,along};
+ }
+ const {along,...target}=best;return target;
+}
+export function findTarget(ink,cluster,gauge,{mark=false,clusters=[]}={}){
  const s=cluster.size;
  if(gauge){
   // The ticks give the exact band of the measured line; text is beside them.
@@ -314,6 +407,12 @@ export function findTarget(ink,cluster,gauge,{mark=false}={}){
   // "0,7 л"); taller neighbours are taken whole, up to half the band.
   if(pick)return {...lineBoxes(probe,vertical,pick.at,pick.direction,c0,c1,Math.max(4,Math.round(band*1.6)),cluster.hue,Math.round(band*.5)+inset),vertical,via:'gauge',gap:pick.gap,band};
  }
+ // A leader line says more than nearness: what it ends at is the inscription.
+ const leader=findLeader(ink,cluster,clusters);
+ if(leader){const target=lineAt(ink,leader.tip,cluster,clusters);if(target)return target;}
+ // The black of the text cannot tell a callout from the print beside it by
+ // colour; without a pointer such a callout is left unlinked.
+ if(cluster.dark)return null;
  // No ticks: the callout is written right beside the inscription it sizes.
  // A W×H statement sizes a mark and is often centred above or below it, so
  // that direction is tried before the text that may stand beside the callout.
@@ -463,7 +562,7 @@ export function linkClaims(readings,rules,volume,margin=false){
     return {index,label:check.label,target:check.target,minimum:check.min,unit:check.unit,value,passes:claim.comparator==='<'?null:value>=check.min};
    })}));
   // Confidence of the association, kept apart from confidence of the number.
-  const geometry=reading.target?.via==='gauge'?2:reading.target?1:0,textual=Math.max(...links.map(link=>link.semantic?.5:Math.max(link.share,link.whole)));
+  const geometry=['gauge','leader'].includes(reading.target?.via)?2:reading.target?1:0,textual=Math.max(...links.map(link=>link.semantic?.5:Math.max(link.share,link.whole)));
   const numberSure=reading.marksAgree===false?false:reading.confidence>=(reading.marksAgree?70:80)||reading.marksAgree===true&&reading.reads>=2&&reading.confidence>=30;
   const level=!numberSure?'low':links.some(link=>link.semantic||link.sign)?'medium':geometry===2&&textual>=.75?'high':geometry===2&&textual>=.5||geometry===1&&textual>=.6?'medium':'low';
   return {...base,targetText:shown,links:resolved,level,shared:resolved.length>1,
@@ -512,7 +611,7 @@ export function applyDeclaredDimensions(matches,annotations){
  for(const [key,entries] of groups){
   const [ruleId,indexText]=key.split(':'),index=Number(indexText),match=matches[ruleId];if(!match)continue;
   match.declared??=[];match.dimensions??=[];match.measurementMeta??=[];match.measurementNotes??=[];
-  match.declared[index]=entries.map(entry=>({value:entry.check.value,passes:entry.check.passes,level:entry.item.level,nearText:entry.item.targetText,comparator:entry.item.claim.comparator,areas:entry.item.claim.areas,scope:entry.scope,shared:entry.item.shared,raster:entry.link.raster,confidence:entry.item.confidence}));
+  match.declared[index]=entries.map(entry=>({value:entry.check.value,passes:entry.check.passes,level:entry.item.level,nearText:entry.item.targetText,comparator:entry.item.claim.comparator,areas:entry.item.claim.areas,formula:entry.item.claim.formula,scope:entry.scope,shared:entry.item.shared,raster:entry.link.raster,confidence:entry.item.confidence}));
   const usable=entries.filter(entry=>entry.item.level!=='low'&&entry.scope==='section');
   if(Number.isFinite(match.dimensions?.[index])||!usable.length)continue;
   const lowest=usable.sort((a,b)=>a.check.value-b.check.value)[0],values=[...new Set(usable.map(entry=>entry.check.value))];
@@ -529,14 +628,15 @@ export function applyDeclaredDimensions(matches,annotations){
 //  readLatin(img) → {text,confidence}: digits and units of a size statement
 //  readWords(img,mode) → {text,confidence}: the inscription ('line' or 'word')
 export async function readCallouts({sheet,scale=1,crop,readLatin,readWords,avoid=[],limit=48,progress=()=>{}}){
- const ink=classifyInk(sheet),clusters=findCalloutClusters(ink,{avoid}),found=[];
+ // Coloured callouts first; then short lines in the black of the text that have a pointer beside them.
+ const ink=classifyInk(sheet),clusters=[...findCalloutClusters(ink,{avoid}),...findCalloutClusters(ink,{avoid,dark:true}).slice(0,40)],found=[],loose=[];
  const local=(box,source)=>({x0:Math.floor(box.x0/scale)-source.x-2,y0:Math.floor(box.y0/scale)-source.y-2,x1:Math.ceil(box.x1/scale)-source.x+2,y1:Math.ceil(box.y1/scale)-source.y+2});
  for(const [i,cluster] of clusters.entries()){
   if(found.length>=limit)break;progress('callout',i,clusters.length);
   const glyph=cluster.size/scale,source=crop(cluster,Math.ceil(glyph*.3)),only=cluster.glyphs.map(g=>local(g,source)),base=Math.min(6,Math.max(1,46/glyph));
   let best=null;const attempts=[];
   const attempt=async(zoom,rotation,reader,bonus=0)=>{
-   const {text,confidence}=await reader(inkCrop(source.pixels,{scale:zoom,rotation,tone:hueTone(cluster.hue),pad:14,only})),claim=parseClaim(text);
+   const {text,confidence}=await reader(inkCrop(source.pixels,{scale:zoom,rotation,tone:cluster.dark?darkTone:hueTone(cluster.hue),pad:14,only})),claim=parseClaim(text);
    const marksAgree=['box','height'].includes(claim?.kind)?separatorCount(cluster)===claimMarks(claim):undefined;
    // A reading whose decimal marks agree with the ink outranks any other.
    const rank=(!claim?0:claim.kind==='unreadable'?1:marksAgree===false?2:3)*1000+confidence+(claim?.kind==='percent'?bonus:0);
@@ -544,22 +644,48 @@ export async function readCallouts({sheet,scale=1,crop,readLatin,readWords,avoid
    if(!best||rank>best.rank)best=entry;
   };
   for(const rotation of cluster.vertical?[90,270]:[0])await attempt(base,rotation,readLatin);
-  // Every size statement contains a digit; plain captions are left alone.
-  if(!/\d/.test(best.text))continue;
+  // Every size statement contains a digit; plain captions are left alone,
+  // unless they turn out to be a line of a statement written on several lines.
+  if(!/\d/.test(best.text)){if(/[\p{L}%]/u.test(best.text))loose.push({cluster,...best});continue;}
+  // In the black of the text only a plain size statement is a callout.
+  if(cluster.dark&&!['height','box'].includes(best.claim?.kind)){loose.push({cluster,...best});continue;}
   const doubtful=()=>!best.claim||best.claim.kind==='unreadable'||best.marksAgree===false||best.confidence<75;
   for(const factor of [.7,1.4])if(doubtful())await attempt(base*factor,best.rotation,readLatin);
   // A statement with words (share of the label area) needs the text model.
   if(doubtful()||cluster.count>10||/[%>]/.test(best.text))await attempt(base,best.rotation,image=>readWords(image,'line'),500);
-  if(!best.claim)continue;
+  if(!best.claim){loose.push({cluster,...best});continue;}
   // Readings at different magnifications that state the same value support each other.
   const stated=claim=>JSON.stringify([claim?.kind,claim?.value,claim?.values]),agreeing=attempts.filter(entry=>entry.claim&&entry.claim.kind!=='unreadable'&&stated(entry.claim)===stated(best.claim));
-  found.push({cluster,...best,reads:agreeing.length,confidence:agreeing.length?Math.max(...agreeing.map(entry=>entry.confidence)):best.confidence});
+  const entry={cluster,...best,reads:agreeing.length,confidence:agreeing.length?Math.max(...agreeing.map(attempt=>attempt.confidence)):best.confidence};found.push(entry);
+  // A number that did not come out may be one line of a statement written on several.
+  if(best.claim.kind==='unreadable')loose.push({cluster,...best,entry});
+ }
+ // A statement written on two or three lines: lines of one ink, one size and
+ // one direction, one under another, that say nothing each by itself and state
+ // a size or a share when read together. Lines that are statements by
+ // themselves, like two sizes one under another, are never joined.
+ {
+  const across=c=>c.vertical?'x':'y',along=c=>c.vertical?'y':'x',used=new Set();
+  const stacked=(a,b)=>a.vertical===b.vertical&&!!a.dark===!!b.dark&&(a.dark||hueGap(a.hue,b.hue)<=HUE_TOLERANCE)&&Math.max(a.size,b.size)<=Math.min(a.size,b.size)*1.6&&gapOn(a,b,across(a))<=Math.max(a.size,b.size)*1.1&&(overlapOn(a,b,along(a))>=Math.min(span(a,along(a)),span(b,along(a)))*.4);
+  for(const first of loose){
+   if(used.has(first))continue;const group=[first];
+   for(let grown=true;grown&&group.length<4;){grown=false;for(const other of loose)if(!used.has(other)&&!group.includes(other)&&group.some(member=>stacked(member.cluster,other.cluster))){group.push(other);grown=true;break;}}
+   if(group.length<2)continue;
+   // Reading order: down the page, or across it for quarter-turned lines.
+   const turn=first.rotation||0;group.sort((a,b)=>turn===90?a.cluster.x0-b.cluster.x0:turn===270?b.cluster.x0-a.cluster.x0:a.cluster.y0-b.cluster.y0);
+   const text=group.map(item=>item.text).join(' '),claim=parseClaim(text);
+   if(!claim||claim.kind==='unreadable'||group[0].cluster.dark&&!['height','box'].includes(claim.kind))continue;
+   group.forEach(item=>{used.add(item);const at=item.entry?found.indexOf(item.entry):-1;if(at>=0)found.splice(at,1);});
+   const glyphs=group.flatMap(item=>item.cluster.glyphs),cluster={...union(group.map(item=>item.cluster)),vertical:first.cluster.vertical,glyphs,count:glyphs.length,size:Math.max(...group.map(item=>item.cluster.size)),hue:first.cluster.hue,lines:group.length,...(first.cluster.dark?{dark:true}:{})};
+   const marksAgree=['box','height'].includes(claim.kind)?separatorCount(cluster)===claimMarks(claim):undefined;
+   found.push({cluster,text,claim,confidence:Math.min(...group.map(item=>item.confidence)),rotation:turn,marksAgree,reads:1});
+  }
  }
  const gauges=findGauges(ink,found.map(item=>item.cluster)),readings=[];
  const share=box=>({x:box.x0/ink.width,y:box.y0/ink.height,w:(box.x1-box.x0)/ink.width,h:(box.y1-box.y0)/ink.height});
  for(const [i,item] of found.entries()){
   progress('target',i,found.length);
-  const {cluster,claim}=item,gauge=gauges[i],target=['height','box'].includes(claim.kind)?findTarget(ink,cluster,gauge,{mark:claim.kind==='box'}):null,targetReadings=[];
+  const {cluster,claim}=item,gauge=gauges[i],target=['height','box'].includes(claim.kind)?findTarget(ink,cluster,gauge,{mark:claim.kind==='box',clusters:found.map(entry=>entry.cluster)}):null,targetReadings=[];
   if(target){
    const band=target.band/scale,zoom=Math.min(5,Math.max(1,44/band));
    for(const box of [target.tight,target].filter(Boolean)){
@@ -572,8 +698,33 @@ export async function readCallouts({sheet,scale=1,crop,readLatin,readWords,avoid
    }
   }
   const shape=target?.tight||target;
-  readings.push({box:share(cluster),vertical:cluster.vertical,rotation:item.rotation,raw:item.text,claim,confidence:item.confidence,marksAgree:item.marksAgree,reads:item.reads,
+  // A callout in the ink of the text is one only if something points from it to an inscription.
+  if(cluster.dark&&!target)continue;
+  readings.push({box:share(cluster),vertical:cluster.vertical,rotation:item.rotation,...(cluster.dark?{dark:true}:{}),...(cluster.lines?{lines:cluster.lines}:{}),raw:item.text,claim,confidence:item.confidence,marksAgree:item.marksAgree,reads:item.reads,
    gauge:gauge&&{type:gauge.type,span:(gauge.to-gauge.from)/scale},target:target&&{...share(shape),vertical:target.vertical,via:target.via,aspect:(shape.x1-shape.x0)/(shape.y1-shape.y0)},targetReadings});
  }
  return readings;
+}
+
+// The share of the warning by the printer's own formula, kept apart from the
+// share of rectangles the program measures. What the printer states (areas in
+// mm², the excluded part of the label) is one thing; what the raster shows
+// (the rectangle around the inscription, the area of the contour) is another.
+// Both are returned side by side with what follows from each, and nothing is
+// chosen: which method applies is for the specialist to decide.
+//   stated    numbers written on the sheet and the share they give
+//   measured  the same quantities taken from the raster, where there are any
+//   mixed     the measured inscription over the stated base, named as such
+export function statedAreaShare(match,index,pageMm){
+ const claim=(match?.declared?.[index]||[]).find(item=>item.formula&&item.level!=='low');if(!claim)return null;
+ const {inscription,threshold,exclusion}=claim.formula,percent=claim.value,base=threshold&&percent?threshold/(percent/100):null;
+ const result={percent,comparator:claim.comparator,exclusion,stated:{inscription,threshold,base,share:inscription&&base?inscription/base*100:null}};
+ const meta=match.measurementMeta?.[index];
+ if(meta?.method==='rectangle'&&pageMm){
+  const area=box=>box.w*pageMm.width*box.h*pageMm.height,text=area(meta.textBox),label=area(meta.labelBox);
+  result.measured={inscription:text,label,share:text/label*100};
+  if(inscription)result.inscriptionAgrees=Math.abs(text-inscription)<=inscription*.1;
+  if(base){result.mixed={share:text/base*100};result.excluded={area:label-base,part:(label-base)/label*100};}
+ }
+ return result;
 }

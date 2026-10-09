@@ -34,6 +34,11 @@ try{
  assert.equal(rows.length,17);
  assert.equal(rows.find(row=>row.id==='r0')?.status,'Текст найден');
  assert.equal(rows.find(row=>row.id==='r13')?.status,'Текст найден');
+ // Lines read one by one: both turned lines of the shelf life are found, and dense small print is no longer left unsure.
+ assert.equal(rows.find(row=>row.id==='r5')?.status,'Текст найден');
+ const unsure=rows.filter(row=>row.status==='Неуверенное OCR').map(row=>row.id);
+ assert.ok(unsure.length<=2,`unsure sections: ${unsure.join(', ')}`);
+ assert.ok(!rows.some(row=>['Отличие текста','Проверить число'].includes(row.status)),'the sample has no text differences');
  await page.locator('button.rule-row[data-rule="r11"]').click();
  assert.match(await page.locator('.quantity-review').innerText(),/На макете\s+0,7 л/);
  assert.match(await page.locator('.quantity-review').innerText(),/совпадают с Word/);
@@ -42,6 +47,11 @@ try{
  assert.ok(Number(callouts.match(/прочитано (\d+)/)?.[1])>=15,callouts);
  assert.match(await page.locator('.annotation-review').innerText(),/3 мм[\s\S]*ниже минимума 4 мм/);
  assert.match(await page.locator('.calibration').textContent(),/из PDF/);
+ // The sample PDF wraps one picture: its real resolution is told, not that of the rendering.
+ assert.match(await page.locator('.calibration').textContent(),/одна картинка ≈ 300 dpi/);
+ // The share of the warning: the rectangle figure and, beside it, the printer's formula.
+ await page.locator('button.rule-row[data-rule="r8"]').click();
+ assert.match(await page.locator('#detail').innerText(),/Второй показатель — по формуле типографии[\s\S]*3\s?181[\s\S]*решает специалист/);
  assert.deepEqual(errors,[]);
- console.log('Browser smoke passed: contour, product, barcode, physical volume.');
+ console.log('Browser smoke passed: contour, product, barcode, physical volume, isolated lines, raster PDF, area formula.');
 }finally{await browser?.close();await close();}

@@ -119,3 +119,96 @@ test('a long incomplete vertical warning is reread even when a short nearby phra
  const areas=refinementAreas({short,warning});
  assert.equal(areas.length,2);assert.equal(areas[0].rotation,90);assert.ok(areas[0].h>.2);
 });
+
+// ---- words inserted on the print, words beside the phrase, readings that disagree ----
+const placed=(text,x,y,{pass='one',confidence=96,step=.04,w=.036,h=.02,rotation=0}={})=>text.split(' ').map((text,i)=>({text,confidence,pass,rotation,box:{x:x+i*step,y,w,h}}));
+test('a clause inserted on the label does not cost the phrase its beginning',()=>{
+ // The label prints six more words after the fifth; the line then wraps.
+ const words=[...placed('Состав: виноматериал виноградный натуральный белый из сортов винограда европейской группы',.05,.10),...placed('(содержит пищевую добавку антиокислитель), вода питьевая, сахар.',.05,.13)];
+ const match=locatePhrase('Состав: виноматериал виноградный натуральный белый (содержит пищевую добавку антиокислитель), вода питьевая, сахар.',words);
+ assert.equal(match.exact,false);assert.equal(match.coverage,100,'every word of the requirement is found');
+ assert.deepEqual(match.diff.map(d=>[d.kind,d.actual]),[['extra','из сортов винограда европейской группы']]);
+ // A reread that stopped half-way down the first line has fewer extra words and must not be preferred.
+ const cut=[...placed('Состав: виноматериал виноградный',.05,.10,{pass:'cut'}),...placed('(содержит пищевую добавку антиокислитель), вода питьевая, сахар.',.05,.13,{pass:'cut'})];
+ const both=locatePhrase('Состав: виноматериал виноградный натуральный белый (содержит пищевую добавку антиокислитель), вода питьевая, сахар.',[...words,...cut]);
+ assert.equal(both.coverage,100);assert.ok(both.diff.some(d=>d.kind==='extra'&&/сортов/.test(d.actual)),'the inserted clause is shown');
+ assert.ok(!both.diff.some(d=>d.kind==='missing'));
+});
+test('a repetition of the phrase further on does not pull a badly read part of it away',()=>{
+ const words=[...placed('Уровни установленные ТРО ОТ 021/2011 пищевой продукщиий',.05,.1),...placed('Соответствует требованиям ТР ТС 021/2011 пищевой продукции',.05,.13)];
+ const match=locatePhrase('Уровни установленные ТР ТС 021/2011 пищевой продукции',words);
+ assert.ok(!match.diff.some(d=>d.kind==='extra'&&/соответствует/i.test(d.actual)),'the reading stays in its own sentence');
+ assert.ok(match.diff.every(d=>d.kind!=='extra'||d.confidence<75||!/требованиям/.test(d.actual)));
+});
+test('a line of a neighbouring column threaded through a phrase is beside it, not inserted into it',()=>{
+ // Reading order of one pass: first line, a line of the column to the left, second line.
+ const first=placed('Место нахождения: Республика Беларусь,',.40,.10),aside=placed('с цветочными оттенками',.05,.10),second=placed('Гомельская обл., Гомельский район.',.40,.13);
+ const words=[...first,...aside,...second].map((word,i)=>({...word,line:i<first.length?'a':i<first.length+aside.length?'a':'b'}));
+ const match=locatePhrase('Место нахождения: Республика Беларусь, Гомельская обл., Гомельский район.',words);
+ assert.equal(match.exact,true);assert.ok(!match.words.some(word=>/цветочными/.test(word.text)),'the words beside are not part of the found phrase');
+ // A word on the line above is not between the two words either.
+ const above=[...placed('Крепость',.05,.30),{text:'СТБ',confidence:90,pass:'one',box:{x:.13,y:.27,w:.03,h:.02},line:'t'},...placed('40 %',.09,.30)];
+ assert.equal(locatePhrase('Крепость 40 %',above.map(word=>({...word,line:word.line||'t'}))).exact,true);
+ // A word really printed between them stays a difference.
+ assert.equal(locatePhrase('Хранить в холодильнике',line('Хранить не в холодильнике')).exact,false);
+});
+test('one word read twice at one place is not a repetition on the print',()=>{
+ const one=placed('тел. 93-64-93.',.1,.1,{pass:'one',step:.09,w:.08}),two=placed('тел. 93-64-93.',.1,.1,{pass:'two',step:.09,w:.074});
+ const match=locatePhrase('тел. 93-64-93.',[...one,...two]);
+ assert.equal(match.exact,true);
+});
+test('passes that disagree at one place give an uncertain reading, not a difference',()=>{
+ const rule={id:'n',title:'Пищевая ценность',text:'Пищевая ценность на 100 мл продукта',original:'Пищевая ценность на 100 мл продукта',constraint:''};
+ const good=placed('Пищевая ценность на 100 мл продукта',.1,.1,{pass:'one',confidence:70}),bad=placed('Пищевая ценность на 190 мл продукта',.1,.1,{pass:'two',confidence:88});
+ good[3].confidence=90;                                    // one pass reads the required number with confidence
+ const match=locatePhrase(rule.text,[...bad,good[3]]);
+ assert.ok(match.exact||match.diff.every(d=>d.kind==='uncertain'),'not a confident difference');
+ assert.notEqual(evaluate([rule],'',{automatic:{n:{...match,scope:'label'}}})[0].statusLabel,'Проверить число');
+ // Without a second witness the confident different number stays a difference.
+ assert.deepEqual(locatePhrase(rule.text,bad).diff.map(d=>[d.kind,d.actual]),[['replace','190']]);
+});
+
+test('lost and spurious word spaces are the same letters in the same order',()=>{
+ assert.equal(locatePhrase('Срок годности не ограничен',placed('СРОКГОДНОСТИ НЕ ОГРАНИЧЕН',.1,.1,{step:.12,w:.11})).exact,true);
+ assert.equal(locatePhrase('Вода исправленная, спирт',placed('Вода исправ ленная, спирт',.1,.1)).exact,true);
+ // Digits are never run together or parted: their grouping is their value.
+ assert.equal(locatePhrase('Партия 12 5 штук',placed('Партия 125 штук',.1,.1)).exact,false);
+ // Another letter is another word: "СРОКТОДНОСТИ" is not "срок годности".
+ assert.equal(locatePhrase('Срок годности не ограничен',placed('СРОКТОДНОСТИ НЕ ОГРАНИЧЕН',.1,.1,{step:.12,w:.11})).exact,false);
+});
+
+// ---- words missing at the edge of a phrase -----------------------------------
+import {edgePlaces,settleEdges} from '../src/phrase.js';
+test('words missing at the edge are absent only when their place was looked at and holds no such words',()=>{
+ const sheet={width:1000,height:1000},caption=placed('Дата розлива',.30,.80,{step:.06,w:.055,h:.02});
+ const find=()=>locatePhrase('Дата розлива номер партии',caption);
+ const places=edgePlaces(find(),sheet);
+ assert.equal(places.length,1);assert.equal(places[0].side,'trailing');assert.deepEqual(places[0].expected,['номер','партии']);assert.equal(places[0].beside,'розлива');
+ const [rest,next]=places[0].areas;
+ assert.ok(rest.x>=.415&&Math.abs(rest.y-.8)<.01&&rest.w>=.08,'the rest of the line after the last read word');
+ assert.ok(next.y>.82&&next.x<=.31,'the line below, from where the phrase begins');
+ const probe=(box,more)=>({box,rotation:0,blank:false,text:'',confidence:0,...more});
+ // Not looked at: nothing is asserted.
+ assert.equal(settleEdges(find(),[],sheet).diff[0].anchored,undefined);
+ // Both places empty: the words are not on the print.
+ const empty=settleEdges(find(),[probe(rest,{blank:true}),probe(next,{blank:true})],sheet);
+ assert.equal(empty.diff[0].anchored,true);assert.deepEqual([empty.diff[0].edge.blank,empty.diff[0].edge.beside],[true,'розлива']);
+ const rule={id:'d',title:'Подпись',text:'Дата розлива номер партии',original:'',constraint:''};
+ assert.equal(evaluate([rule],'Дата розлива',{automatic:{d:{...empty,scope:'label'}}})[0].statusLabel,'Отличие текста');
+ // Other words printed there, read with confidence: the words are not there either, and what stands there is told.
+ const other=settleEdges(find(),[probe(rest,{blank:true}),probe(next,{text:'СТБ 1122 РЦ',confidence:93})],sheet);
+ assert.equal(other.diff[0].anchored,true);assert.deepEqual(other.diff[0].edge.seen,['СТБ 1122 РЦ']);
+ // Print that could not be read, or only one of the two places examined: nothing is asserted.
+ assert.equal(settleEdges(find(),[probe(rest,{blank:true}),probe(next,{text:'нмр прт',confidence:35})],sheet).diff[0].anchored,undefined);
+ assert.equal(settleEdges(find(),[probe(rest,{blank:true})],sheet).diff[0].anchored,undefined);
+ // The words themselves read there: no absence; the matching takes them from the reading.
+ assert.equal(settleEdges(find(),[probe(rest,{text:'номер партии',confidence:90}),probe(next,{blank:true})],sheet).diff[0].anchored,undefined);
+ // The same words printed elsewhere on the label: not absent, only not here.
+ const elsewhere=placed('номер партии',.6,.2);
+ assert.equal(settleEdges(find(),[probe(rest,{blank:true}),probe(next,{blank:true})],sheet,[...caption,...elsewhere]).diff[0].anchored,undefined);
+ // Turned text: the place is further up the page for text read after a quarter turn clockwise.
+ const turned=['Дата','розлива'].map((text,i)=>({text,confidence:96,pass:'one',rotation:90,box:{x:.5,y:.8-i*.07,w:.02,h:.06}}));
+ const place=edgePlaces(locatePhrase('Дата розлива номер партии',turned),sheet)[0];
+ assert.equal(place.rotation,90);assert.ok(place.areas[0].y+place.areas[0].h<=.731&&Math.abs(place.areas[0].x-.5)<.01,'above the last word, in its column');
+ assert.ok(place.areas[1].x>.52,'the next line stands to the right');
+});

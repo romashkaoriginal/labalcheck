@@ -1,11 +1,12 @@
 import {readFileSync} from 'node:fs';
 import {gunzipSync} from 'node:zlib';
-import {matchRequirements} from '../src/automatic.js';
+import {assess} from '../src/automatic.js';
 import {evaluate} from '../src/engine.js';
 
 const reference=JSON.parse(readFileSync(new URL('../tests/fixtures/sample-human-reference.json',import.meta.url),'utf8'));
-const sample=JSON.parse(gunzipSync(readFileSync(new URL('../tests/fixtures/sample-lines-ocr.json.gz',import.meta.url))));
-const automatic=matchRequirements(sample.rules,sample.words,'0,7',false,sample.label,true);
+// The saved reading of the last real browser run of the sample: words of both engines and the places looked at again.
+const sample=JSON.parse(gunzipSync(readFileSync(new URL('../tests/fixtures/run-sjabry.json.gz',import.meta.url))));
+const automatic=assess({...sample,page:sample.image});
 const observed=evaluate(sample.rules,sample.actual,{automatic});
 const byId=new Map(observed.map(row=>[row.id,row]));
 const textLabels={matches:'есть в макете',conditional:'условное требование',not_applicable:'не применяется',graphics:'знаки видны',date_sample_missing:'подпись есть, даты нет'};

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {classifyInk,findCalloutClusters,findGauges,findTarget,parseClaim,separatorCount,claimMarks,insideSimilarity,linkClaims,verifyOnLabel,applyDeclaredDimensions,readCallouts} from '../src/callouts.js';
+import {classifyInk,findCalloutClusters,findGauges,findTarget,parseClaim,separatorCount,claimMarks,insideSimilarity,linkClaims,verifyOnLabel,applyDeclaredDimensions,readCallouts,statedAreaShare} from '../src/callouts.js';
+import {evaluate} from '../src/engine.js';
 
 // ---- a drawn technical sheet ------------------------------------------------
 // Glyphs are solid blocks: enough for geometry, and nothing here depends on the
@@ -302,4 +303,89 @@ test('reading a sheet: number, pointer, inscription and rule in a layout and in 
   assert.deepEqual(linked.map(item=>[item.claim.value,item.links[0]?.ruleId,item.links[0]?.checks[0]?.label,item.level]).sort(),[[2.1,'shelf','Срок годности','high'],[2.56,'name','Высота букв','high']]);
   assert.ok(readings.every(item=>item.marksAgree===true&&item.gauge.type==='height'&&item.target.via==='gauge'));
  }
+});
+
+// ---- callouts of other styles ------------------------------------------------
+// No real sheet with black callouts, slanted leaders or two-line statements was
+// available: these sheets are drawn, like the ones above. They show that the
+// geometry is handled, not how often real sheets are read correctly.
+const cropOf=s=>(box,pad)=>{const {width,height,data:source}=s.pixels,x=Math.max(0,Math.floor(box.x0-pad)),y=Math.max(0,Math.floor(box.y0-pad)),w=Math.min(width,Math.ceil(box.x1+pad))-x,h=Math.min(height,Math.ceil(box.y1+pad))-y,data=new Uint8ClampedArray(w*h*4);for(let row=0;row<h;row++)data.set(source.subarray(((row+y)*width+x)*4,((row+y)*width+x+w)*4),row*w*4);return {pixels:{data,width:w,height:h},x,y};};
+// A straight stroke between two points, three pixels thick.
+const stroke=(s,from,to,color)=>{const steps=Math.ceil(Math.max(Math.abs(to[0]-from[0]),Math.abs(to[1]-from[1])));for(let i=0;i<=steps;i++){const x=from[0]+(to[0]-from[0])*i/steps,y=from[1]+(to[1]-from[1])*i/steps;s.fill(x-1,y-1,x+2,y+2,color);}};
+
+test('a callout in the black of the text is known by its pointer; lines of a paragraph are not callouts',async()=>{
+ const s=sheet(),line=s.text([6,9,5],700,300);
+ for(let i=0;i<4;i++)s.text([8,6,9,7,5],700,520+i*42,{size:28});          // a paragraph: lines right under one another
+ s.text([4,3],200,900,{size:24});                                           // a short caption with no pointer
+ const mark=s.callout('d,d mm',line.x0-250,304,{color:BLACK});
+ s.fill(mark.x1+6,line.y0,line.x0-6,line.y0+2,BLACK);s.fill(mark.x1+6,line.y1-2,line.x0-6,line.y1,BLACK);
+ const ink=classifyInk(s.pixels),clusters=findCalloutClusters(ink,{dark:true});
+ assert.equal(clusters.length,1,'only the short line with strokes beside it is offered');
+ assert.ok(covers(clusters[0],mark,3)&&clusters[0].dark);
+ const gauges=findGauges(ink,clusters),target=findTarget(ink,clusters[0],gauges[0],{clusters});
+ assert.equal(gauges[0]?.type,'height');assert.equal(target.via,'gauge');assert.ok(covers(target,line));
+ const readings=await readCallouts({sheet:s.pixels,crop:cropOf(s),readLatin:async image=>({text:blocks(image)===4?'2,1 mm':'',confidence:92}),readWords:async image=>({text:blocks(image)===20?'СРОК ГОДНОСТИ 12 МЕСЯЦЕВ':'',confidence:90})});
+ assert.equal(readings.length,1);assert.equal(readings[0].dark,true);assert.equal(readings[0].claim.value,2.1);assert.equal(readings[0].marksAgree,true);
+ assert.deepEqual(linkClaims(readings,rules,'0,75').map(item=>[item.links[0]?.ruleId,item.level]),[['shelf','high']]);
+});
+
+test('a leader line drawn at an angle leads to the inscription it ends at, in colour and in black',()=>{
+ for(const color of [PINK,BLACK]){
+  const s=sheet(),line=s.text([6,9,5],700,300),other=s.text([8,7,6],300,560),mark=s.callout('d,d mm',320,470,{color});
+  // From beside the callout up and to the right, to under the first line; the second line is nearer to the callout.
+  stroke(s,[mark.x1+8,mark.y0+4],[line.x0+90,line.y1+7],color);
+  const ink=classifyInk(s.pixels),clusters=findCalloutClusters(ink,{dark:color===BLACK});
+  assert.equal(clusters.length,1,'the leader is not a glyph of the callout');
+  const gauges=findGauges(ink,clusters),target=findTarget(ink,clusters[0],gauges[0],{clusters});
+  assert.equal(gauges[0],null);assert.equal(target?.via,'leader');
+  assert.ok(covers(target,line),'the line the leader ends at');assert.ok(!inside(other,target,0),'not the line that merely stands nearer');
+ }
+});
+
+test('a statement written on two lines is read as one; two statements one under another stay two',async()=>{
+ const s=sheet(),top=s.callout('dd,d',300,300),bottom=s.callout('mm',310,300+34);
+ const first=s.callout('d.ddd mm',900,300),second=s.callout('d.dd mm',900,340);
+ const readLatin=async image=>({text:{3:'12,5',2:'mm',6:'0.688 mm',5:'0.85 mm'}[blocks(image)]||'',confidence:91});
+ const readings=await readCallouts({sheet:s.pixels,crop:cropOf(s),readLatin,readWords:async image=>readLatin(image)});
+ assert.deepEqual(readings.map(item=>[item.claim.kind,item.claim.value,item.lines||1]).sort((a,b)=>a[1]-b[1]),[['height',.688,1],['height',.85,1],['height',12.5,2]]);
+ const joined=readings.find(item=>item.lines===2);
+ assert.equal(joined.marksAgree,true,'the comma of the upper line is counted in the joined statement');
+ assert.ok(joined.box.y*1200<=top.y0+2&&(joined.box.y+joined.box.h)*1200>=bottom.y1-2,'both lines are one callout');
+ assert.ok(first&&second);
+});
+
+test('several callouts of one section are all kept and the smallest decides',()=>{
+ const empty=()=>({dimensions:[null],measurementNotes:[''],measurementMeta:[null],words:[]}),matches={name:empty()};
+ const name='НАПИТОК СЛАБОАЛКОГОЛЬНЫЙ НАТУРАЛЬНЫЙ ГАЗИРОВАННЫЙ НЕПАСТЕРИЗОВАННЫЙ';
+ applyDeclaredDimensions(matches,verifyOnLabel(linkClaims([reading('2.56 mm',name),reading('2.4 mm',name),reading('2.56 mm',name)],rules,'0,75'),matches));
+ assert.equal(matches.name.declared[0].length,3);assert.equal(matches.name.dimensions[0],2.4);
+ assert.deepEqual([matches.name.measurementMeta[0].count,matches.name.measurementMeta[0].values],[3,[2.4,2.56]]);
+});
+
+// ---- the formula of the printer for the share of the warning ------------------
+test('the share by the formula of the printer is a second figure, with stated and measured numbers kept apart',()=>{
+ // As OCR returns the callout: S read as 5, the raised 2 as ? and a quote.
+ const claim=parseClaim('5 надписи = 359,9 мм? > 10% от 5 этикетки, исключая место для фсм (318,1 мм”)');
+ assert.deepEqual([claim.kind,claim.value,claim.comparator,claim.areas],['percent',10,'>',[359.9,318.1]]);
+ assert.deepEqual(claim.formula,{inscription:359.9,threshold:318.1,exclusion:'место для фсм'});
+ assert.equal(parseClaim('>11% от площади этикетки').formula,undefined,'a bare share states no formula');
+ // Label 54 x 103 mm on a 280 x 297 mm page; the warning 74.9 x 4.8 mm.
+ const page={width:280,height:297},labelBox={x:.1,y:.1,w:54/280,h:103/297},textBox={x:.2,y:.2,w:4.8/280,h:74.9/297};
+ const match={declared:[[{value:10,comparator:'>',level:'medium',formula:claim.formula}]],measurementMeta:[{method:'rectangle',textBox,labelBox}],dimensions:[4.8*74.9/(54*103)*100]};
+ const share=statedAreaShare(match,0,page),near=(a,b,slack=.05)=>Math.abs(a-b)<=slack;
+ // Stated by the printer: 359.9 / (318.1 / 10 %) = 11.3 %.
+ assert.ok(near(share.stated.base,3181,.5)&&near(share.stated.share,11.31));assert.equal(share.exclusion,'место для фсм');
+ // Measured on the raster: the rectangle over the whole contour, 6.5 %.
+ assert.ok(near(share.measured.inscription,359.5,.2)&&near(share.measured.label,5562,.5)&&near(share.measured.share,6.46));
+ assert.equal(share.inscriptionAgrees,true);
+ // What the stated base leaves out of the contour, and the measured inscription over the stated base.
+ assert.ok(near(share.excluded.area,2381,1)&&near(share.excluded.part,42.8,.1)&&near(share.mixed.share,11.3,.05));
+ // The rectangle figure is not replaced and nothing is chosen for the specialist.
+ const rule={id:'w',title:'Обязательная надпись',text:'Чрезмерное употребление',original:'',constraint:'не менее 10 % площади этикетки'};
+ const row=evaluate([rule],'Чрезмерное употребление',{automatic:{w:{...match,exact:true,words:[],areaFormula:[share]}}})[0];
+ assert.ok(near(row.dimensions[0].value,6.46));assert.equal(row.dimensions[0].pass,false);assert.equal(row.dimensions[0].formula,share);assert.equal(row.statusLabel,'Проверить размеры');
+ // Without a measured rectangle only the stated numbers remain.
+ assert.equal(statedAreaShare({declared:[[{value:10,comparator:'>',level:'medium',formula:claim.formula}]],measurementMeta:[null]},0,page).measured,undefined);
+ // A statement read with low confidence is not used.
+ assert.equal(statedAreaShare({declared:[[{value:10,level:'low',formula:claim.formula}]]},0,page),null);
 });

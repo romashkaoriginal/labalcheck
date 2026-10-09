@@ -1,5 +1,6 @@
 import {variantText, dimensionChecks, scopeIndex, normalize} from './engine.js';
-import {locatePhrase,orderedTextCandidates,fragmentsOf} from './phrase.js';
+import {locatePhrase,orderedTextCandidates,fragmentsOf,settleEdges} from './phrase.js';
+import {fuseOcrMatches} from './ocr-fusion.js';
 import {isQuantityRule,quantities,expectedQuantity,quantityComparison,quantityEvidence,dateEvidence,glyphHeight,insideLabel,equivalentNotations} from './quantity.js';
 
 // Two panels standing side by side or one above the other are also enclosed by
@@ -334,4 +335,19 @@ export function matchRequirements(rules,words,volume,margin,label,hasContour) {
     });
     return [rule.id,{...match,scope:scoped?'label':'page',boxes,dimensions,measurementNotes,measurementMeta,quantity,date}];
   }));
+}
+
+// Everything that is decided about the text from what was read: the first
+// engine's reading of every requirement, the second engine's where it read the
+// same places, and what a second look found where words were missing at the
+// edge of a phrase. The page, the audit script and the tests all go through
+// here, so a saved run is judged exactly as the page judged it.
+//   words, secondaryWords  readings of the two engines
+//   edgeProbes             places looked at again: {box,rotation,blank,text,confidence}
+//   page                   {width,height} of the sheet in pixels
+export function assess({rules,words,secondaryWords=[],volume,margin=false,label,hasContour,edgeProbes=[],page=null}){
+ const primary=matchRequirements(rules,words,volume,margin,label,hasContour);
+ const matches=hasContour&&secondaryWords.length?fuseOcrMatches(primary,matchRequirements(rules,secondaryWords,volume,margin,label,hasContour)):primary;
+ if(edgeProbes.length&&page){const inside=hasContour&&label?words.filter(word=>insideLabel(word.box,label)):words;for(const match of Object.values(matches))settleEdges(match,edgeProbes,page,inside);}
+ return matches;
 }

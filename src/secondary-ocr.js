@@ -1,5 +1,5 @@
 import {PaddleOCR} from '@paddleocr/paddleocr-js';
-import {paddleWords} from './paddle.js';
+import {paddleWords,lineSheets,sheetWords} from './paddle.js';
 
 let instancePromise;
 
@@ -38,6 +38,27 @@ export async function readWithSecondaryOcr(canvas,region,rotations=[0]){
  for(const rotation of [...new Set(rotations)]){
   const [result]=await ocr.predict(rotated(source,rotation),{textDetLimitSideLen:1800});
   words.push(...paddleWords(result,region,source.width,source.height,rotation,`paddle:${rotation}`));
+ }
+ return words;
+}
+
+// Lines that were cut out one by one, each with only its own ink, are read
+// by the second engine too. They are set on plain sheets with wide leading:
+// detection then meets no tight leading and no neighbouring inscriptions, and
+// every reading still comes from the pixels of one line alone.
+export async function readLinesWithSecondaryOcr(lines,aspect=1){
+ if(!lines.length)return [];
+ const ocr=await instance(),words=[];
+ for(const sheet of lineSheets(lines)){
+  const canvas=document.createElement('canvas');canvas.width=sheet.width;canvas.height=sheet.height;
+  const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.imageSmoothingQuality='high';
+  for(const slot of sheet.slots){
+   const image=slot.line.image,source=document.createElement('canvas');source.width=image.width;source.height=image.height;
+   source.getContext('2d').putImageData(new ImageData(image.data,image.width,image.height),0,0);
+   for(const piece of slot.pieces)ctx.drawImage(source,piece.from,0,piece.to-piece.from,image.height,slot.x+piece.at*slot.scale,slot.y,(piece.to-piece.from)*slot.scale,slot.h);
+  }
+  const [result]=await ocr.predict(canvas,{textDetLimitSideLen:Math.max(canvas.width,canvas.height)});
+  words.push(...sheetWords(result,sheet,aspect));
  }
  return words;
 }

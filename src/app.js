@@ -1,14 +1,14 @@
 import {unzipSync,strFromU8} from 'fflate';
 import * as pdfjs from 'pdfjs-dist';
 import {createWorker} from 'tesseract.js';
-import {fuseOcrMatches} from './ocr-fusion.js';
 import {suggestedHeightMargin,raisedText} from './requirements.js';
 import {requirementsFromSource,evaluate,compareText,variantText,escapeHtml as esc} from './engine.js';
-import {detectFrames, refineFrame, detectArtworkRegion, segmentInk, inkLineAreas, wordsFromOcr, matchRequirements} from './automatic.js';
+import {detectFrames, refineFrame, detectArtworkRegion, segmentInk, wordsFromOcr, matchRequirements, assess} from './automatic.js';
 import {scanEan13} from './barcode.js';
-import {refinementAreas,refinementLines,pageReadingBox} from './phrase.js';
-import {quantityReadAreas,quantities,isQuantityRule,numericInk,recoverNumericReading} from './quantity.js';
-import {readCallouts,linkClaims,verifyOnLabel,applyDeclaredDimensions} from './callouts.js';
+import {refinementAreas,pageReadingBox,edgePlaces} from './phrase.js';
+import {seedBlocks,blockLines,printOnly} from './lines.js';
+import {quantityReadAreas,quantities,isQuantityRule,numericInk,recoverNumericReading,insideLabel} from './quantity.js';
+import {readCallouts,linkClaims,verifyOnLabel,applyDeclaredDimensions,statedAreaShare} from './callouts.js';
 import {imageDensity,resolveScale,declaredLabelSize} from './scale.js';
 pdfjs.GlobalWorkerOptions.workerSrc=new URL('./vendor/pdf.worker.min.mjs',location.href).href;
 
@@ -39,13 +39,27 @@ function phraseView(rule){
  const match=state.matches[rule.id];if(!match||match.method==='manual')return '';
  if(!match.recognizedText)return '<p class="muted">Слова найдены в отдельных участках. Связную фразу автоматически восстановить пока не удалось.</p>';
  const explanation=match.exact?(match.notation?`Слова и числа совпадают с Word, но единица записана иначе: в Word «${match.notation.expected}», на макете «${match.notation.printed}». Величина та же; допустима ли такая запись, решает специалист.`:match.method==='quantity'?'Термин, числовое значение и единица найдены отдельно. Количество сопоставлено с выбранным вариантом столбца 3.':match.method==='independent-ocr'?'Второе OCR независимо прочитало фразу в том же месте. Первое чтение было неуверенным; оба чтения показаны ниже.':match.method==='barcode'?'EAN-13 считан из полос штрихкода. Номер совпадает с Word; контрольная цифра верна.':match.method==='fragments'?`Фрагменты требования (${match.fragments}) найдены и совпадают по словам и порядку внутри каждого фрагмента.`:match.method==='consensus'?'Фраза восстановлена по координатам и нескольким чтениям одного участка. Слова и их порядок совпадают с Word.':'Порядок слов восстановлен по строкам макета. Текст совпадает с требованием с учётом регистра, переносов и записи чисел.'):rule.comparison.status==='uncertain'?'Некоторые символы OCR прочитал неуверенно. Это не доказывает расхождение с макетом; проверьте указанные места по оригиналу.':rule.comparison.confident?'Это наиболее близкая фраза на макете. Отличия ниже прочитаны уверенно, но и уверенное чтение бывает ошибочным: решение принимается после сверки с оригиналом.':'Это наиболее близкая фраза на макете после повторного чтения. Ниже показаны отличия распознанного текста.';
- return `<div class="phrase-review ${rule.comparison.status==='uncertain'?'uncertain':''}"><h3>${rule.comparison.status==='uncertain'?'Черновое чтение OCR':'Найденная фраза'}</h3><div class="found-phrase">${esc(match.recognizedText).replace(/\n/g,'<br>')}</div><p>${explanation}</p>${match.ocrEvidence?`<div class="phrase-differences"><div class="difference-head"><span>Основное OCR</span><span>Независимое OCR</span></div><div class="difference-row"><span>${esc(match.ocrEvidence.primary)}</span><span>${esc(match.ocrEvidence.secondary)}</span></div></div>`:''}${match.diff?.length?`<div class="phrase-differences" aria-label="Отличия распознанной фразы"><div class="difference-head"><span>В Word</span><span>${rule.comparison.status==='uncertain'?'Неуверенное OCR':'Распознано'}</span></div>${match.diff.slice(0,12).map(d=>`<div class="difference-row"><span>${esc(d.expected||'Нет в требовании')}</span><span>${esc(d.actual||(d.anchored?'Нет на макете: соседние слова прочитаны':'Не найдено: нет на макете либо не прочитано OCR'))}${d.kind==='uncertain'?' (похожие знаки, неуверенное чтение)':d.expected===d.actual?' (низкая уверенность)':''}</span></div>`).join('')}${match.diff.length>12?`<p>Ещё ${match.diff.length-12} отличий. Сверьте фрагмент целиком.</p>`:''}</div>`:''}</div>`;
+ return `<div class="phrase-review ${rule.comparison.status==='uncertain'?'uncertain':''}"><h3>${rule.comparison.status==='uncertain'?'Черновое чтение OCR':'Найденная фраза'}</h3><div class="found-phrase">${esc(match.recognizedText).replace(/\n/g,'<br>')}</div><p>${explanation}</p>${match.ocrEvidence?`<div class="phrase-differences"><div class="difference-head"><span>Основное OCR</span><span>Независимое OCR</span></div><div class="difference-row"><span>${esc(match.ocrEvidence.primary)}</span><span>${esc(match.ocrEvidence.secondary)}</span></div></div>`:''}${match.diff?.length?`<div class="phrase-differences" aria-label="Отличия распознанной фразы"><div class="difference-head"><span>В Word</span><span>${rule.comparison.status==='uncertain'?'Неуверенное OCR':'Распознано'}</span></div>${match.diff.slice(0,12).map(d=>`<div class="difference-row"><span>${esc(d.expected||'Нет в требовании')}</span><span>${esc(d.actual||(d.anchored?(d.edge?(d.edge.blank?`Нет на макете: место ${d.edge.side==='leading'?'перед':'после'} «${d.edge.beside}» перечитано крупнее, там пусто`:`Нет на макете: на месте ${d.edge.side==='leading'?'перед':'после'} «${d.edge.beside}» напечатано другое — «${d.edge.seen.join(' / ').slice(0,80)}»`):'Нет на макете: соседние слова прочитаны'):d.edge?.reread?.length?`Не вошло в прочитанную фразу; при повторном чтении места ${d.edge.side==='leading'?'перед':'после'} «${d.edge.beside}» прочитано «${d.edge.reread.join(' / ').slice(0,80)}» — сверьте по макету`:'Не найдено: нет на макете либо не прочитано OCR'))}${d.kind==='uncertain'?' (похожие знаки, неуверенное чтение)':d.expected===d.actual?' (низкая уверенность)':''}</span></div>`).join('')}${match.diff.length>12?`<p>Ещё ${match.diff.length-12} отличий. Сверьте фрагмент целиком.</p>`:''}</div>`:''}</div>`;
 }
 function quantityView(rule){
  const q=rule.quantity;if(!q)return '';
  const label=q.expected?`${format(q.expected.value)} ${q.expected.unit}`:'Не выбран вариант из Word',actual=q.actual?`${format(q.actual.value)} ${q.actual.unit}`:'Не прочитано';
  const verdict={match:'Значение и единица совпадают с Word',equivalent:'Количество эквивалентно после пересчёта, но единица записи отличается от Word',wrong_value:'Числовое значение отличается от Word',wrong_unit:'Единица относится к другой величине',wrong_quantity:'Количество после пересчёта отличается от Word',ambiguous:'Несколько вариантов или неоднозначное чтение. Проверьте макет и выбранный объём',unreadable:'Количество не прочитано уверенно'}[q.status];
  return `<div class="quantity-review"><h3>Количество и единица измерения</h3><dl><div><dt>Требования · выбранный вариант</dt><dd>${esc(label)}</dd></div><div><dt>На макете</dt><dd>${esc(actual)}</dd></div></dl><p class="${q.status==='match'?'quantity-match':'quantity-attention'}">${esc(verdict)}</p><p class="muted">Пример количества из столбца 2 не заменяет значение из столбца 3. Запятая, точка и обозначения л / L / l учитываются при сравнении.</p></div>`;
+}
+// The second figure for the share of the warning: the printer's formula, with
+// stated numbers and raster measurements named apart.
+function formulaText(f){
+ const mm2=value=>`${format(value>=1000?Math.round(value):Math.round(value*10)/10)} мм²`,share=value=>`${format(Math.round(value*10)/10)} %`,s=f.stated,parts=[`Второй показатель — по формуле типографии «S надписи / S этикетки${f.exclusion?', исключая '+f.exclusion:''}».`];
+ if(s.inscription&&s.base)parts.push(`По числам техлиста (заявлено, не измерено): ${mm2(s.inscription)} / ${mm2(s.base)} = ${share(s.share)}; база ${mm2(s.base)} получена из заявленных «${format(f.percent)} % = ${mm2(s.threshold)}».`);
+ else if(s.inscription)parts.push(`На техлисте заявлена площадь надписи ${mm2(s.inscription)}; базу для процента типография не указала.`);
+ if(f.measured){
+  if(s.inscription)parts.push(`По растру прямоугольник надписи ≈ ${mm2(f.measured.inscription)}: с заявленным ${f.inscriptionAgrees?'согласуется':'расходится'}.`);
+  if(f.excluded)parts.push(`Контур этикетки по растру ≈ ${mm2(f.measured.label)}, значит из базы исключено ≈ ${mm2(f.excluded.area)} (${share(f.excluded.part)} контура). ${f.exclusion?'Зону «'+f.exclusion+'»':'Исключённую зону'} программа на макете не измеряет: это число типографии.`);
+  if(f.mixed)parts.push(`Смешанная оценка — надпись по растру к базе типографии: ≈ ${share(f.mixed.share)}.`);
+ }
+ parts.push(`По прямоугольнику ко всему контуру${f.measured?' ≈ '+share(f.measured.share):' значение не измерено'}. Какая методика применима, решает специалист.`);
+ return parts.join(' ');
 }
 function measurementDetail(rule,d){
  const q=rule.quantity;
@@ -56,7 +70,8 @@ function measurementDetail(rule,d){
  if(stated.length&&d.meta?.method!=='declared')detail+=`Типография на техлисте заявляет: ${stated.map(item=>(item.comparator&&item.comparator!=='='?item.comparator+' ':'')+format(item.value)+' '+d.unit+(item.areas?.length?` (площади ${item.areas.map(format).join(' и ')} мм²)`:'')+(item.scope==='line'?' — только для строки «'+(item.nearText||'').slice(0,40)+'»':'')).join('; ')}. ${d.contradicted?'Выноска расходится с оценкой по растру той же надписи: проверьте число и привязку. ':stated.some(item=>item.raster?.agrees)?'Оценка по растру той же надписи с выноской согласуется. ':''}`;
  if(d.target==='date_digits'&&rule.date?.text)detail+='Найденные цифры: '+rule.date.text+'. ';
  if(d.meta?.method==='rectangle')detail+='Площадь прямоугольника вокруг всей надписи / площадь прямоугольного контура этикетки × 100. Это оценка занимаемого блока, не площадь чернил. Для фигурной этикетки и иного способа расчёта нужен отдельный замер.';
- if(d.meta?.method==='raster-glyphs')detail+=`Оценка видимой высоты, не кегль. ${d.target==='letters'?'Для обычного текста берётся типичная высота букв каждого найденного слова и наименьшая из этих высот; это не замер каждой буквы. ':''}${d.meta.pixelStep?`Шаг растра для замера ${format(d.meta.pixelStep)} мм/пиксель; два пикселя ≈ ${format(d.meta.pixelStep*2)} мм. `:''}Это разрешение, а не гарантия общей погрешности: границы OCR, фон и форма букв также влияют на результат.`;
+ if(d.formula)detail+=' '+formulaText(d.formula);
+ if(d.meta?.method==='raster-glyphs')detail+=`Оценка видимой высоты, не кегль. ${d.target==='letters'?'Для обычного текста берётся типичная высота букв каждого найденного слова и наименьшая из этих высот; это не замер каждой буквы. ':''}${d.meta.pixelStep?`Шаг растра для замера ${format(d.meta.pixelStep)} мм/пиксель; два пикселя ≈ ${format(d.meta.pixelStep*2)} мм. `:''}Это разрешение, а не гарантия общей погрешности: границы OCR, фон и форма букв также влияют на результат.${d.meta.pixelStep>=.07?' Уточнить высоту точнее шага растра не удаётся надёжно: на модельных буквах известной высоты при 300 dpi замер по сглаженно увеличенной строке ошибается на 0,02–0,04 мм и завышает до 0,05 мм у округлых букв, а разбор краёв в градациях серого для букв до 1 мм не точнее. Различить 0,80 и 0,85 мм по такому растру нельзя.':''}`;
  if(d.borderline)detail+=' Значение близко к минимуму с учётом разрешения: нужен контроль по оригиналу.';
  if(d.reason)detail+=d.reason;
  return detail?`<p class="measurement-note">${esc(detail)}</p>`:'';
@@ -91,7 +106,7 @@ function scaleText(){
  const scale=state.scale,size=scale?.declared?`${format(scale.declared[0])} × ${format(scale.declared[1])} мм`:'';
  if(!scale)return 'Масштаб определяется во время проверки макета.';
  const contour=scale.label&&state.hasContour?`Найденный контур этикетки ≈ ${format(scale.label.width)} × ${format(scale.label.height)} мм.`:'Контур этикетки не определён; доля площади не рассчитывается.';
- if(scale.source==='pdf')return `Миллиметры рассчитаны из геометрии страницы PDF при печати 1:1 (страница ${format(state.pageMm.width)} × ${format(state.pageMm.height)} мм). ${contour}${size?` На листе заявлен размер ${size}: ${scale.fits?'контур ему соответствует.':'контур ему не соответствует — проверьте, тот ли контур найден.'}`:''} Высота букв оценивается по видимым символам, а не по кеглю.`;
+ if(scale.source==='pdf')return `Миллиметры рассчитаны из геометрии страницы PDF при печати 1:1 (страница ${format(state.pageMm.width)} × ${format(state.pageMm.height)} мм). ${state.pdfRaster?`Страница PDF — это одна картинка ≈ ${Math.round(state.pdfRaster.dpi)} dpi, а не кривые: шаг растра ${(25.4/state.pdfRaster.dpi).toFixed(3).replace('.',',')} мм/пиксель, и увеличение при чтении не добавляет деталей. `:''}${contour}${size?` На листе заявлен размер ${size}: ${scale.fits?'контур ему соответствует.':'контур ему не соответствует — проверьте, тот ли контур найден.'}`:''} Высота букв оценивается по видимым символам, а не по кеглю.`;
  if(scale.source==='density+declared')return `В файле указано разрешение ${Math.round(scale.density.x)} dpi. Оно подтверждено независимо: на листе заявлен размер этикетки ${size}, а найденный контур при этом разрешении даёт ≈ ${format(scale.label.width)} × ${format(scale.label.height)} мм. Шаг растра ${format(scale.mmPerPixel)} мм/пиксель, поэтому оценки высоты мелких букв грубые (не точнее ±${format(scale.mmPerPixel*2)} мм).`;
  if(scale.source==='declared')return `Подтверждённого разрешения в файле нет. Масштаб выведен из заявленного на листе размера этикетки ${size} и найденного контура; второго независимого источника нет, поэтому миллиметры ориентировочные. ${contour}`;
  return `У изображения нет достоверного физического масштаба. ${scale.reason||''} Высота букв по растру не оценивается; доступны только числа из выносок техлиста.`;
@@ -146,13 +161,14 @@ function bind(){
 }
 function getReview(){return state.review[state.selected]??=( {} );}
 function rematch(){
- const primary=matchRequirements(state.rules,state.words,state.volume,state.margin?state.marginAmount:false,state.label,state.hasContour);
- if(!state.hasContour||!state.secondaryWords.length)state.matches=primary;
- else{const secondary=matchRequirements(state.rules,state.secondaryWords,state.volume,state.margin?state.marginAmount:false,state.label,state.hasContour);state.matches=fuseOcrMatches(primary,secondary);}
+ // Both engines' readings and what the second look at edge places found are judged in one place.
+ state.matches=assess({rules:state.rules,words:state.words,secondaryWords:state.secondaryWords,volume:state.volume,margin:state.margin?state.marginAmount:false,label:state.label,hasContour:state.hasContour,edgeProbes:state.edgeProbes||[],page:state.image?{width:state.image.width,height:state.image.height}:null});
  // Callouts are linked to rules, compared with the same inscription on the
  // label and entered as declared sizes only where nothing was measured.
  state.annotations=verifyOnLabel(linkClaims(state.calloutReadings,state.rules,state.volume,state.margin?state.marginAmount:false),state.matches,state.image?{width:state.image.width,height:state.image.height}:undefined);
  applyDeclaredDimensions(state.matches,state.annotations);
+ // The printer's formula for the share of the warning: a second figure beside the rectangle share.
+ for(const match of Object.values(state.matches)){if(!match?.declared)continue;match.areaFormula=match.declared.map((list,index)=>list?statedAreaShare(match,index,state.pageMm):null);}
 }
 function format(n){return Number(n).toLocaleString('ru-RU',{maximumFractionDigits:2});}
 function fail(message){state.error=message;state.busy=false;render();}
@@ -199,14 +215,28 @@ async function loadArtwork(file,{analyze=true}={}){try{
  render();if(state.rules.length&&analyze)await recognize();
  }catch(error){fail('Макет не открыт: '+error.message);}}
 async function renderPdfPage(pdf,pageNo){const page=await pdf.getPage(pageNo);const natural=page.getViewport({scale:1});const scale=Math.min(6,6500/Math.max(natural.width,natural.height));const vp=page.getViewport({scale});const canvas=document.createElement('canvas');canvas.width=Math.ceil(vp.width);canvas.height=Math.ceil(vp.height);await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;return imageFromUrl(canvas.toDataURL('image/png'));}
-async function renderPdfCrop(pdf,pageNo,region){const page=await pdf.getPage(pageNo),natural=page.getViewport({scale:1}),scale=Math.min(10,9500/Math.max(natural.width,natural.height)),vp=page.getViewport({scale}),canvas=document.createElement('canvas');canvas.width=Math.ceil(vp.width*region.w);canvas.height=Math.ceil(vp.height*region.h);await page.render({canvasContext:canvas.getContext('2d'),viewport:vp,transform:[1,0,0,1,-vp.width*region.x,-vp.height*region.y]}).promise;return canvas;}
+// A PDF page that is one picture has no outlines to draw again: its real
+// resolution is that of the picture, whatever size it is rendered at.
+async function pdfPicture(page){
+ const list=await page.getOperatorList(),OPS=pdfjs.OPS,painted=new Set([OPS.fill,OPS.eoFill,OPS.stroke,OPS.fillStroke,OPS.eoFillStroke,OPS.closeStroke,OPS.closeFillStroke,OPS.closeEOFillStroke,OPS.showText,OPS.showSpacedText,OPS.nextLineShowText,OPS.nextLineSetSpacingShowText,OPS.shadingFill]),stack=[],pictures=[];
+ let matrix=[1,0,0,1,0,0],drawn=0;
+ list.fnArray.forEach((fn,i)=>{
+  const args=list.argsArray[i];
+  if(fn===OPS.save)stack.push(matrix);else if(fn===OPS.restore)matrix=stack.pop()||matrix;else if(fn===OPS.transform)matrix=pdfjs.Util.transform(matrix,args);
+  else if(fn===OPS.paintImageXObject||fn===OPS.paintInlineImageXObject){const width=args[1]??args[0]?.width,height=args[2]??args[0]?.height,w=Math.hypot(matrix[0],matrix[1]),h=Math.hypot(matrix[2],matrix[3]);if(width&&height&&w&&h)pictures.push({dpi:Math.min(width/w,height/h)*72,area:w*h});}
+  else if(painted.has(fn))drawn++;
+ });
+ const view=page.getViewport({scale:1}),largest=pictures.sort((a,b)=>b.area-a.area)[0];
+ return !drawn&&largest&&largest.area>=view.width*view.height*.8?{dpi:largest.dpi}:null;
+}
+async function renderPdfCrop(pdf,pageNo,region,wanted=Infinity){const page=await pdf.getPage(pageNo),natural=page.getViewport({scale:1}),scale=Math.min(10,9500/Math.max(natural.width,natural.height),wanted),vp=page.getViewport({scale}),canvas=document.createElement('canvas');canvas.width=Math.ceil(vp.width*region.w);canvas.height=Math.ceil(vp.height*region.h);await page.render({canvasContext:canvas.getContext('2d'),viewport:vp,transform:[1,0,0,1,-vp.width*region.x,-vp.height*region.y]}).promise;return canvas;}
 async function changePage(n){try{state.busy=true;state.busyMessage='Открываем страницу';render();state.image=await renderPdfPage(state.pdf,n);Object.assign(state,{page:n,label:null,full:false,geometryConfirmed:false,actual:'',origin:'',review:{},words:[],secondaryWords:[],matches:{},calloutReadings:[],annotations:[],pageMm:null,hasContour:false,busy:false});await recognize();}catch(error){fail(error.message);}}
 async function recognize(){
  if(!state.image||state.busy)return;
  if(!state.rules.length){toast('Сначала загрузите требования Word.');return;}
  const generation=++ocrGeneration;
  try{
-  Object.assign(state,{busy:true,error:'',progress:0,busyMessage:'Ищем контуры этикетки',review:{},matches:{},words:[],secondaryWords:[],calloutReadings:[],annotations:[],actual:'',pageMm:null,scale:null,geometryConfirmed:false});render();
+  Object.assign(state,{busy:true,error:'',progress:0,busyMessage:'Ищем контуры этикетки',review:{},matches:{},words:[],secondaryWords:[],calloutReadings:[],annotations:[],edgeProbes:[],actual:'',pageMm:null,scale:null,pdfRaster:null,geometryConfirmed:false});render();
   const img=state.image,probe=document.createElement('canvas'),ratio=Math.min(1,1200/Math.max(img.width,img.height));probe.width=Math.round(img.width*ratio);probe.height=Math.round(img.height*ratio);probe.getContext('2d').drawImage(img,0,0,probe.width,probe.height);
   const probePixels=probe.getContext('2d').getImageData(0,0,probe.width,probe.height),artwork=detectArtworkRegion(probePixels);
   // One working copy of the whole sheet serves contour refinement and callouts.
@@ -217,7 +247,8 @@ async function recognize(){
   // Lengths are millimetres for a PDF and source pixels for an image, whose
   // scale is settled only after the label contour is known.
   let pageUnits={width:img.width,height:img.height};
-  if(state.pdf){const page=await state.pdf.getPage(state.page),vp=page.getViewport({scale:1});pageUnits=state.pageMm={width:vp.width*25.4/72,height:vp.height*25.4/72};state.geometryConfirmed=true;state.contourStep=Math.max(state.pageMm.width/sheet.width,state.pageMm.height/sheet.height);}
+  if(state.pdf){const page=await state.pdf.getPage(state.page),vp=page.getViewport({scale:1});pageUnits=state.pageMm={width:vp.width*25.4/72,height:vp.height*25.4/72};state.geometryConfirmed=true;state.contourStep=Math.max(state.pageMm.width/sheet.width,state.pageMm.height/sheet.height);
+   const picture=await pdfPicture(page);state.pdfRaster=picture&&{dpi:picture.dpi,coarser:img.width/vp.width*72/picture.dpi};}
   const language=state.rules.some(r=>/(?:[a-z]{5}|[a-z]{3,}\s+[a-z]{3,})/i.test(r.text))?'rus+eng':'rus';
   if(worker&&workerLanguage!==language){await worker.terminate();worker=null;}
   if(!worker){worker=await createWorker(language,1,{workerPath:new URL('./vendor/worker.min.js',location.href).href,corePath:new URL('./vendor/core/',location.href).href,langPath:new URL('./assets/lang/',location.href).href,logger:m=>{const p=document.querySelector('progress');if(p)p.value=m.progress;const text=document.querySelector('.progress-panel span');if(text)text.textContent=state.busyMessage;const percent=document.querySelector('.progress-panel strong');if(percent)percent.textContent=Math.round((m.progress||0)*100)+'%';}});workerLanguage=language;}
@@ -239,14 +270,14 @@ async function recognize(){
   await worker.setParameters({tessedit_pageseg_mode:'3',preserve_interword_spaces:'1'});
   const makeCanvas=region=>{const c=document.createElement('canvas'),w=region.w*img.width,h=region.h*img.height,f=Math.min(4,2800/Math.max(w,h));c.width=Math.max(1,Math.round(w*f));c.height=Math.max(1,Math.round(h*f));c.getContext('2d').drawImage(img,region.x*img.width,region.y*img.height,w,h,0,0,c.width,c.height);return c;};
   let readPass=0;
-  const orient=(canvas,rotation)=>{if(!rotation)return canvas;const input=document.createElement('canvas');input.width=rotation%180?canvas.height:canvas.width;input.height=rotation%180?canvas.width:canvas.height;const ctx=input.getContext('2d');ctx.translate(input.width/2,input.height/2);ctx.rotate(rotation*Math.PI/180);ctx.drawImage(canvas,-canvas.width/2,-canvas.height/2);return input;};
   const read=async(region,canvas,rotation,stretch=1.5)=>{
    let input=canvas;
    if(rotation){input=document.createElement('canvas');input.width=rotation%180?canvas.height:canvas.width;input.height=rotation%180?canvas.width:canvas.height;const ctx=input.getContext('2d');ctx.translate(input.width/2,input.height/2);ctx.rotate(rotation*Math.PI/180);ctx.drawImage(canvas,-canvas.width/2,-canvas.height/2);}
    const stretched=document.createElement('canvas');stretched.width=Math.round(input.width*stretch);stretched.height=input.height;stretched.getContext('2d').drawImage(input,0,0,stretched.width,stretched.height); const {data}=await worker.recognize(stretched,{}, {text:true,blocks:true}); for(const b of data.blocks||[])for(const p of b.paragraphs||[])for(const l of p.lines||[])for(const w of l.words||[]){w.bbox.x0/=stretch;w.bbox.x1/=stretch;for(const symbol of w.symbols||[]){symbol.bbox.x0/=stretch;symbol.bbox.x1/=stretch;}}
    const mm=rotation%180?pageUnits.width*region.w/canvas.width:pageUnits.height*region.h/canvas.height;
    const words=wordsFromOcr(data,region,canvas.width,canvas.height,rotation,mm,`ocr-${++readPass}`,input.getContext('2d').getImageData(0,0,input.width,input.height));
-   for(const word of words)word.sourcePixelMm=rotation%180?pageUnits.width/img.width:pageUnits.height/img.height;
+   // A picture inside a PDF keeps its own, coarser pixels however large the page is drawn.
+   for(const word of words)word.sourcePixelMm=(rotation%180?pageUnits.width/img.width:pageUnits.height/img.height)*Math.max(1,state.pdfRaster?.coarser||1);
    return {text:data.text,words};
   };
   let best=null;
@@ -307,32 +338,89 @@ async function recognize(){
    state.busyMessage=`Повторно читаем неоднозначную фразу: ${i+1} из ${areas.length}`;await worker.setParameters({tessedit_pageseg_mode:area.lineCount===1?'7':'6'});
    const extra=await read(area,crop,area.rotation,2.5);if(extra.text.trim()){result.text+='\n'+extra.text;result.words.push(...extra.words);}
   }
-  // Recompute uncertainty after paragraph rereads. Segment only uncertain crops
-  // from their pixels and read lines independently; layout is never fixed to a
-  // column, product or expected inscription.
-  const lineMatches=matchRequirements(state.rules,result.words,state.volume,state.margin?state.marginAmount:false,region,state.hasContour),lineTargets=refinementAreas(lineMatches);
-  let lineBudget=120;
-  await worker.setParameters({tessedit_pageseg_mode:'7',thresholding_method:'2'});
-  for(let i=0;i<lineTargets.length&&lineBudget>0;i++){
-   const area=lineTargets[i],crop=orient(makeCanvas(area),area.rotation),lines=inkLineAreas(crop.getContext('2d').getImageData(0,0,crop.width,crop.height),area,area.rotation);
-   const pass=`lines-${i}`,limit=Math.min(lines.length,Math.max(8,Math.floor(lineBudget/(lineTargets.length-i))));
-   for(let j=0;j<limit;j++){
-    state.busyMessage=`Читаем строки неоднозначных блоков: ${i+1} из ${lineTargets.length}, строка ${j+1} из ${limit}`;
-    const line=lines[j],extra=await read(line,makeCanvas(line),line.rotation,2.5);
-    for(const word of extra.words){word.pass=pass;word.line=String(j);word.readingBox=pageReadingBox(word.box,word.rotation,img.width/img.height);}
-    if(extra.text.trim()){result.text+='\n'+extra.text;result.words.push(...extra.words);}lineBudget--;
+  // Every line of print is read once more by itself. A line is cut out with
+  // only its own ink: commas of the line above, accents of the line below and
+  // letters of an inscription beside it are left out, as they are what turns
+  // into stray signs in a reading. Blocks are found where words were already
+  // read; nothing is fixed to a column, a product or an expected inscription.
+  const lineShots=[],edgeProbes=[];
+  {
+   const page={width:img.width,height:img.height},bounds={x0:region.x*img.width,y0:region.y*img.height,x1:(region.x+region.w)*img.width,y1:(region.y+region.h)*img.height};
+   const blocks=seedBlocks(result.words.filter(word=>word.pass?.startsWith('ocr-')&&(!state.hasContour||insideLabel(word.box,region))),page);
+   // Outlines of a PDF can be drawn again larger; a picture cannot, and a PDF
+   // that only wraps a picture is a picture. Enlarging one adds no detail.
+   let detail=null,detailScale=1;
+   if(state.pdf&&!state.pdfRaster){
+    const natural=(await state.pdf.getPage(state.page)).getViewport({scale:1}),pageScale=img.width/natural.width,wanted=Math.min(10/pageScale,6000/Math.max(bounds.x1-bounds.x0,bounds.y1-bounds.y0));
+    if(wanted>1.15){state.busyMessage='Перерисовываем этикетку из PDF крупнее';detail=await renderPdfCrop(state.pdf,state.page,region,pageScale*wanted);detailScale=detail.width/(bounds.x1-bounds.x0);}
    }
-  }
-  const baselineLines=refinementLines(lineMatches).slice(0,lineBudget);
-  await worker.setParameters({thresholding_method:'0'});
-  for(let i=0;i<baselineLines.length;i++){
-   state.busyMessage=`Уточняем строки по координатам символов: ${i+1} из ${baselineLines.length}`;
-   const area=baselineLines[i],source=state.pdf?await renderPdfCrop(state.pdf,state.page,area):makeCanvas(area),lineHeight=area.rotation%180?source.width:source.height;
-   let crop=source;if(lineHeight>65){crop=document.createElement('canvas');crop.width=Math.round(source.width*65/lineHeight);crop.height=Math.round(source.height*65/lineHeight);crop.getContext('2d').drawImage(source,0,0,crop.width,crop.height);}
-   const extra=await read(area,crop,area.rotation,2.5);
-   if(state.pdf)for(const word of extra.words)word.sourcePixelMm=area.rotation%180?state.pageMm.width*area.w/source.width:state.pageMm.height*area.h/source.height;
-   for(const word of extra.words){word.pass=`baselines-${word.rotation}`;word.line=String(i);word.readingBox=pageReadingBox(word.box,word.rotation,img.width/img.height);}
-   if(extra.text.trim()){result.text+='\n'+extra.text;result.words.push(...extra.words);}
+   const scratch=document.createElement('canvas'),pen=scratch.getContext('2d',{willReadFrequently:true});
+   const grab=(box,turn,scale,erase)=>{
+    const w=Math.max(1,Math.round((box.x1-box.x0)*scale)),h=Math.max(1,Math.round((box.y1-box.y0)*scale));
+    scratch.width=turn%180?h:w;scratch.height=turn%180?w:h;pen.fillStyle='#fff';pen.fillRect(0,0,scratch.width,scratch.height);
+    pen.save();pen.translate(scratch.width/2,scratch.height/2);pen.rotate(turn*Math.PI/180);pen.translate(-w/2,-h/2);pen.imageSmoothingEnabled=true;pen.imageSmoothingQuality='high';
+    if(detail)pen.drawImage(detail,(box.x0-bounds.x0)*detailScale,(box.y0-bounds.y0)*detailScale,(box.x1-box.x0)*detailScale,(box.y1-box.y0)*detailScale,0,0,w,h);
+    else pen.drawImage(img,box.x0,box.y0,box.x1-box.x0,box.y1-box.y0,0,0,w,h);
+    for(const row of erase)pen.fillRect((row.x*img.width-box.x0)*scale-1,(row.y*img.height-box.y0)*scale-1,row.w*img.width*scale+2,row.h*img.height*scale+2);
+    pen.restore();return pen.getImageData(0,0,scratch.width,scratch.height);
+   };
+   const picture=image=>{const c=document.createElement('canvas');c.width=image.width;c.height=image.height;c.getContext('2d').putImageData(new ImageData(image.data,image.width,image.height),0,0);return c;};
+   // One isolated line through the text model: `stretch` widens condensed
+   // letters, `height` brings the line to the size the model reads best.
+   const readLine=async(line,image,pass,id,{stretch=1,height=0,measure=false}={})=>{
+    const sy=height?height/image.height:1,sx=sy*stretch,edge=12,input=document.createElement('canvas');input.width=Math.round(image.width*sx)+edge*2;input.height=Math.round(image.height*sy)+edge*2;
+    const ctx=input.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,input.width,input.height);ctx.imageSmoothingQuality='high';ctx.drawImage(picture(image),edge,edge,input.width-edge*2,input.height-edge*2);
+    const {data}=await worker.recognize(input,{}, {text:true,blocks:true});
+    // Boxes back into the pixels of the line image.
+    for(const b of data.blocks||[])for(const p of b.paragraphs||[])for(const l of p.lines||[])for(const w of l.words||[])for(const box of [w.bbox,...(w.symbols||[]).map(symbol=>symbol.bbox)]){box.x0=(box.x0-edge)/sx;box.x1=(box.x1-edge)/sx;box.y0=(box.y0-edge)/sy;box.y1=(box.y1-edge)/sy;}
+    const turn=line.rotation,width=turn%180?image.height:image.width,height0=turn%180?image.width:image.height,unit=turn%180?pageUnits.width*line.region.w/width:pageUnits.height*line.region.h/height0;
+    // Where the line runs out of its window the word at that edge is cut in two and is not kept.
+    const near=line.letter*line.scale*1.2,words=wordsFromOcr(data,line.region,width,height0,turn,measure?unit:null,pass,measure?image:null).filter(word=>!(line.cut.left&&word.readingBox.x<near)&&!(line.cut.right&&word.readingBox.x+word.readingBox.w>image.width-near)),pagePixel=turn%180?pageUnits.width/img.width:pageUnits.height/img.height;
+    for(const word of words){
+     // The step of a measurement is that of the pixels that really exist: a
+     // redrawn outline has finer ones, an enlarged picture has not.
+     word.sourcePixelMm=detail?pagePixel/Math.min(line.scale,detailScale):pagePixel*Math.max(1,state.pdfRaster?.coarser||1);
+     word.line=id;word.readingBox=pageReadingBox(word.box,word.rotation,img.width/img.height);if(!measure)word.glyphs=[];
+    }
+    if(data.text.trim()){result.text+='\n'+data.text;result.words.push(...words);}
+   };
+   await worker.setParameters({tessedit_pageseg_mode:'7',thresholding_method:'0'});
+   const taken=[];let budget=170;
+   for(let i=0;i<blocks.length&&budget>0;i++){
+    const lines=blockLines(blocks[i],blocks,page,grab,{bounds,maxScale:detail?detailScale:2.4,taken,limit:budget});budget-=lines.length;
+    for(let j=0;j<lines.length;j++){
+     state.busyMessage=`Читаем строки по отдельности: блок ${i+1} из ${blocks.length}, строка ${j+1} из ${lines.length}`;
+     const line=lines[j],id=`line-${lineShots.length}`;lineShots.push({image:line.gray,region:line.region,rotation:line.rotation,id,cut:line.cut});
+     await readLine(line,line.gray,`line-gray:${line.rotation}`,id,{stretch:1.5,measure:true});
+     await readLine(line,line.binary,`line-binary:${line.rotation}`,id,{stretch:1.5});
+     await readLine(line,line.gray,`line-even:${line.rotation}`,id,{height:48});
+    }
+   }
+   // Words of a requirement missing at the edge of what was read may be
+   // absent or merely unread. Exactly the place where they would stand is
+   // looked at again, larger: empty paper, other words or the words themselves.
+   const edges=Object.values(matchRequirements(state.rules,result.words,state.volume,state.margin?state.marginAmount:false,region,state.hasContour)).flatMap(match=>match&&(match.scope==='label'||!state.hasContour)?edgePlaces(match,page):[]).slice(0,12);
+   const same=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y)+Math.abs(a.w-b.w)+Math.abs(a.h-b.h)<1e-6;
+   // The same word whatever stray quotes or points a pass attached to it.
+   const plainText=text=>text.toLowerCase().replace(/[^\p{L}\p{N}%]/gu,'')||text.trim();
+   for(const place of edges)for(const area of place.areas){
+    if(edgeProbes.some(probe=>probe.rotation===place.rotation&&same(probe.box,area)))continue;
+    state.busyMessage=`Перечитываем крупнее место ненайденных слов: ${edgeProbes.length+1}`;
+    // Print already read with confidence in another direction is a different
+    // inscription that happens to stand there, not the rest of this phrase.
+    const across=result.words.filter(word=>word.box&&(word.rotation||0)!==place.rotation&&(word.confidence??0)>=80&&word.text.trim()&&word.box.x<area.x+area.w&&word.box.x+word.box.w>area.x&&word.box.y<area.y+area.h&&word.box.y+word.box.h>area.y)
+     // … and only when two passes read the same word at the same place: one pass alone may have misread turned letters.
+     .filter(word=>result.words.some(other=>other!==word&&other.box&&other.pass!==word.pass&&(other.rotation||0)===(word.rotation||0)&&(other.confidence??0)>=50&&plainText(other.text)===plainText(word.text)&&Math.min(other.box.x+other.box.w,word.box.x+word.box.w)-Math.max(other.box.x,word.box.x)>Math.min(other.box.w,word.box.w)*.5&&Math.min(other.box.y+other.box.h,word.box.y+word.box.h)-Math.max(other.box.y,word.box.y)>Math.min(other.box.h,word.box.h)*.5));
+    const scale=Math.min(detail?detailScale:3,Math.max(1,34/place.letter)),pixels=printOnly(grab({x0:area.x*img.width,y0:area.y*img.height,x1:(area.x+area.w)*img.width,y1:(area.y+area.h)*img.height},place.rotation,scale,across.map(word=>word.box)),place.letter*scale);
+    // No print of this size there: the place is empty, whatever rules, frames or neighbours cross it.
+    const probe={box:area,rotation:place.rotation,blank:!pixels&&!across.length,text:'',confidence:0},id=`edge-${edgeProbes.length}`,before=result.words.length;edgeProbes.push(probe);
+    if(!pixels){if(across.length){const seen=[...new Set(across.map(word=>word.text.trim()))];probe.text=seen.slice(0,6).join(' ');probe.confidence=across.reduce((n,word)=>n+word.confidence,0)/across.length;}continue;}
+    await worker.setParameters({tessedit_pageseg_mode:'6'});
+    await readLine({rotation:place.rotation,region:area,scale,letter:place.letter,cut:{left:false,right:false}},pixels,`edge:${place.rotation}`,id,{stretch:1.5});
+    const fresh=result.words.slice(before).filter(word=>/[\p{L}\p{N}]/u.test(word.text));
+    probe.text=fresh.map(word=>word.text).join(' ');probe.confidence=fresh.length?fresh.reduce((n,word)=>n+word.confidence,0)/fresh.length:0;
+    lineShots.push({image:pixels,region:area,rotation:place.rotation,id,cut:{}});
+   }
   }
   await worker.setParameters({thresholding_method:'0'});
   if(state.rules.some(isQuantityRule)){
@@ -392,6 +480,12 @@ async function recognize(){
     try{const {readWithSecondaryOcr}=await import('./secondary-ocr.js');secondaryWords=await readWithSecondaryOcr(canvas,region,rotations);}
     catch(error){secondaryIssue=' Дополнительное чтение не удалось; результаты основного OCR сохранены.';console.warn('Secondary OCR unavailable',error);}
    }
+   // Every isolated line goes to the second engine as well, not only disputed phrases.
+   if(lineShots.length){
+    state.busyMessage='Читаем каждую строку независимым OCR';render();
+    try{const {readLinesWithSecondaryOcr}=await import('./secondary-ocr.js');secondaryWords.push(...await readLinesWithSecondaryOcr(lineShots,img.width/img.height));}
+    catch(error){secondaryIssue=' Построчное независимое чтение не удалось; результаты основного OCR сохранены.';console.warn('Secondary line OCR unavailable',error);}
+   }
   }
   // Settle the physical scale. A PDF has it by construction; an image gets it
   // only when the stated label size agrees with the found contour.
@@ -405,11 +499,11 @@ async function recognize(){
    state.pageMm=factor?{width:img.width*factor,height:img.height*factor}:null;state.geometryConfirmed=scale.level==='high';
    state.contourStep=factor?factor/sheetScale:null;
   }
-  Object.assign(state,{scale,label:region,width:state.pageMm?state.pageMm.width*region.w:0,height:state.pageMm?state.pageMm.height*region.h:0,full:false,words:result.words,secondaryWords,calloutReadings,actual:result.text,origin:'Автоматическое OCR · порядок по координатам',analysisNote:(state.hasContour?'Текст сверяется внутри найденного контура этикетки. Увеличенные образцы вне контура не подтверждают наличие текста на этикетке.':'Текст проверен по расположению на листе. Контур не определён уверенно.')+(calloutReadings.length?' Размеры из выносок техлиста сверяются отдельно как заявление типографии.':'')+(secondaryWords.length?' Спорные фразы дополнительно прочитаны независимым OCR.':'')+secondaryIssue,busy:false,edited:false,progress:1});
+  Object.assign(state,{edgeProbes,scale,label:region,width:state.pageMm?state.pageMm.width*region.w:0,height:state.pageMm?state.pageMm.height*region.h:0,full:false,words:result.words,secondaryWords,calloutReadings,actual:result.text,origin:'Автоматическое OCR · порядок по координатам',analysisNote:(state.hasContour?'Текст сверяется внутри найденного контура этикетки. Увеличенные образцы вне контура не подтверждают наличие текста на этикетке.':'Текст проверен по расположению на листе. Контур не определён уверенно.')+(calloutReadings.length?' Размеры из выносок техлиста сверяются отдельно как заявление типографии.':'')+(secondaryWords.length?' Спорные фразы дополнительно прочитаны независимым OCR.':'')+secondaryIssue,busy:false,edited:false,progress:1});
   rematch();if(!state.actual.trim())state.error='Текст не распознан. Загрузите более чёткий PDF или изображение.';render();toast('Автоматическая сверка завершена. Выберите требование, чтобы увидеть найденный блок.');
  }catch(error){if(worker){try{await worker.terminate();}catch{}worker=null;}fail('Не удалось завершить автоматическую проверку: '+error.message+'. Попробуйте другой PDF или повторите проверку.');}
 }
-function exportReport(){const result=rows();const done=result.length>0&&result.every(r=>['pass','na'].includes(r.status))&&state.geometryConfirmed;const stamp=new Date().toLocaleString('ru-RU',{timeZone:'Europe/Minsk'});const html=`<!doctype html><html lang="ru"><meta charset="utf-8"><title>Отчёт проверки маркировки</title><style>body{font:15px/1.5 Arial,sans-serif;max-width:1200px;margin:40px auto;color:#172033}h1{font-size:26px}table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:12px;border:1px solid #ccd3dd;text-align:left;vertical-align:top}.pass{color:#137a4b}.error,.issue{color:#b42318}.pending{color:#765900}pre{white-space:pre-wrap;font-family:inherit}small{color:#526175}@media print{body{margin:10mm}tr{break-inside:avoid}}</style><h1>Отчёт проверки контрэтикетки</h1><p><strong>${esc(state.product||state.category)} · ${esc(state.volume)} л</strong><br>Дата: ${esc(stamp)} (Минск)<br>Требования: ${esc(state.sourceName)}<br>Макет: ${esc(state.fileName)} · страница ${state.page}<br>Режим: ${state.margin?'Минимумы + запас '+format(state.marginAmount)+' мм':'Минимумы из Word'}<br>Масштаб: ${esc(scaleText())}</p><h2>${done?'Все разделы подтверждены специалистом':'Проверка НЕ ЗАВЕРШЕНА'}</h2><p>Это отчёт сверки с предоставленным Word. Автоматическое распознавание не является подтверждением соответствия. Читаемость на фоне и юридическая актуальность требований сайтом не устанавливаются.</p><table><thead><tr><th>Раздел</th><th>Ожидаемый текст</th><th>Размеры и условия</th><th>Результат</th><th>Комментарий</th></tr></thead><tbody>${result.map(r=>`<tr><td>${esc(r.title)}</td><td>${esc(r.expected).replace(/\n/g,'<br>')}</td><td>${esc(r.constraint)}<br>${r.quantity?esc('Количество из Word: '+(r.quantity.expected?format(r.quantity.expected.value)+' '+r.quantity.expected.unit:'не выбран вариант')+'; OCR: '+(r.quantity.actual?format(r.quantity.actual.value)+' '+r.quantity.actual.unit:'не прочитано'))+'<br>':''}${r.dimensions.map(d=>`${esc(d.label)}: ${d.value==null?'не измерено':(d.meta?.method==='declared'?'заявлено выноской ':d.estimated?'≈ по растру ':'')+format(d.value)+' '+d.unit}; минимум ${format(d.min)} ${d.unit}${(d.declared||[]).length&&d.meta?.method!=='declared'?'; выноски техлиста: '+d.declared.map(item=>format(item.value)+' '+d.unit+' ('+levelNames[item.level]+' уверенность'+(item.raster?item.raster.agrees?', согласуется с растром':', расходится с растром':'')+')').join(', '):''}${d.reason?'; '+esc(d.reason):''}${d.meta?.pixelStep?'; шаг растра '+format(d.meta.pixelStep)+' мм/пиксель (не полная погрешность)':''}${d.meta?.method==='rectangle'?'; отношение площадей охватывающих прямоугольников, не площадь чернил':''}${d.borderline?'; пограничный замер':''}${d.target==='quantity'&&r.quantity?'; цифры ≈ '+(Number.isFinite(r.quantity.numberHeight)?format(r.quantity.numberHeight):'не измерены')+' мм; единица ≈ '+(Number.isFinite(r.quantity.unitHeight)?format(r.quantity.unitHeight):'не измерена')+' мм':''}`).join('<br>')}</td><td class="${r.comparison.status==='uncertain'?'pending':r.status}">${r.statusLabel||statuses[r.status][0]}<br>${comparisonNames[r.comparison.status]}${state.matches[r.id]?.recognizedText?"<br>Найденная фраза: "+esc(state.matches[r.id].recognizedText):""}${state.matches[r.id]?.ocrEvidence?"<br>Основное OCR: "+esc(state.matches[r.id].ocrEvidence.primary)+"<br>Независимое OCR: "+esc(state.matches[r.id].ocrEvidence.secondary):""}${(state.matches[r.id]?.diff||[]).map(d=>(r.comparison.status==='uncertain'?"<br>Неуверенное чтение OCR — Word: ":"<br>Word: ")+esc(d.expected||"нет в требовании")+" → OCR: "+esc(d.actual||(d.anchored?"нет на макете (соседние слова прочитаны)":"не найдено: нет на макете либо не прочитано"))).join("")}<br>Текст подтверждён: ${r.state.textConfirmed?'да':'нет'}<br>Условия столбца 2: ${r.state.constraintsConfirmed?'подтверждены':'не подтверждены'}${/окно.*дат/i.test(r.title)?'<br>Окно и цифры даты подтверждены: '+(r.state.windowConfirmed?'да':'нет'):''}</td><td>${esc(r.state.note||'')}</td></tr>`).join('')}</tbody></table>${annotationReport()}${state.sourceDiagnostics?.length?'<h2>Разбор документа требует проверки</h2><p>'+state.sourceDiagnostics.map(esc).join('<br>')+'</p>':''}${state.globalConditions?.length?'<h2>Общие условия документа</h2><p>'+state.globalConditions.map(esc).join('<br>')+'</p>':''}<h2>Извлечённый текст макета</h2><small>Источник: ${esc(state.origin||'Не извлечён')}${state.edited?' · отредактирован вручную':''}</small><pre>${esc(state.actual||'Распознавание не выполнено')}</pre></html>`;const url=URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='Проверка маркировки_'+(state.product||state.category).replace(/[^\p{L}\p{N} ._-]/gu,'')+'.html';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Отчёт скачан. Его можно открыть и распечатать в PDF.');}
+function exportReport(){const result=rows();const done=result.length>0&&result.every(r=>['pass','na'].includes(r.status))&&state.geometryConfirmed;const stamp=new Date().toLocaleString('ru-RU',{timeZone:'Europe/Minsk'});const html=`<!doctype html><html lang="ru"><meta charset="utf-8"><title>Отчёт проверки маркировки</title><style>body{font:15px/1.5 Arial,sans-serif;max-width:1200px;margin:40px auto;color:#172033}h1{font-size:26px}table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:12px;border:1px solid #ccd3dd;text-align:left;vertical-align:top}.pass{color:#137a4b}.error,.issue{color:#b42318}.pending{color:#765900}pre{white-space:pre-wrap;font-family:inherit}small{color:#526175}@media print{body{margin:10mm}tr{break-inside:avoid}}</style><h1>Отчёт проверки контрэтикетки</h1><p><strong>${esc(state.product||state.category)} · ${esc(state.volume)} л</strong><br>Дата: ${esc(stamp)} (Минск)<br>Требования: ${esc(state.sourceName)}<br>Макет: ${esc(state.fileName)} · страница ${state.page}<br>Режим: ${state.margin?'Минимумы + запас '+format(state.marginAmount)+' мм':'Минимумы из Word'}<br>Масштаб: ${esc(scaleText())}</p><h2>${done?'Все разделы подтверждены специалистом':'Проверка НЕ ЗАВЕРШЕНА'}</h2><p>Это отчёт сверки с предоставленным Word. Автоматическое распознавание не является подтверждением соответствия. Читаемость на фоне и юридическая актуальность требований сайтом не устанавливаются.</p><table><thead><tr><th>Раздел</th><th>Ожидаемый текст</th><th>Размеры и условия</th><th>Результат</th><th>Комментарий</th></tr></thead><tbody>${result.map(r=>`<tr><td>${esc(r.title)}</td><td>${esc(r.expected).replace(/\n/g,'<br>')}</td><td>${esc(r.constraint)}<br>${r.quantity?esc('Количество из Word: '+(r.quantity.expected?format(r.quantity.expected.value)+' '+r.quantity.expected.unit:'не выбран вариант')+'; OCR: '+(r.quantity.actual?format(r.quantity.actual.value)+' '+r.quantity.actual.unit:'не прочитано'))+'<br>':''}${r.dimensions.map(d=>`${esc(d.label)}: ${d.value==null?'не измерено':(d.meta?.method==='declared'?'заявлено выноской ':d.estimated?'≈ по растру ':'')+format(d.value)+' '+d.unit}; минимум ${format(d.min)} ${d.unit}${d.formula?'; '+esc(formulaText(d.formula)):''}${(d.declared||[]).length&&d.meta?.method!=='declared'?'; выноски техлиста: '+d.declared.map(item=>format(item.value)+' '+d.unit+' ('+levelNames[item.level]+' уверенность'+(item.raster?item.raster.agrees?', согласуется с растром':', расходится с растром':'')+')').join(', '):''}${d.reason?'; '+esc(d.reason):''}${d.meta?.pixelStep?'; шаг растра '+format(d.meta.pixelStep)+' мм/пиксель (не полная погрешность)':''}${d.meta?.method==='rectangle'?'; отношение площадей охватывающих прямоугольников, не площадь чернил':''}${d.borderline?'; пограничный замер':''}${d.target==='quantity'&&r.quantity?'; цифры ≈ '+(Number.isFinite(r.quantity.numberHeight)?format(r.quantity.numberHeight):'не измерены')+' мм; единица ≈ '+(Number.isFinite(r.quantity.unitHeight)?format(r.quantity.unitHeight):'не измерена')+' мм':''}`).join('<br>')}</td><td class="${r.comparison.status==='uncertain'?'pending':r.status}">${r.statusLabel||statuses[r.status][0]}<br>${comparisonNames[r.comparison.status]}${state.matches[r.id]?.recognizedText?"<br>Найденная фраза: "+esc(state.matches[r.id].recognizedText):""}${state.matches[r.id]?.ocrEvidence?"<br>Основное OCR: "+esc(state.matches[r.id].ocrEvidence.primary)+"<br>Независимое OCR: "+esc(state.matches[r.id].ocrEvidence.secondary):""}${(state.matches[r.id]?.diff||[]).map(d=>(r.comparison.status==='uncertain'?"<br>Неуверенное чтение OCR — Word: ":"<br>Word: ")+esc(d.expected||"нет в требовании")+" → OCR: "+esc(d.actual||(d.anchored?(d.edge?(d.edge.blank?"нет на макете (место перечитано крупнее: пусто)":"нет на макете (на этом месте напечатано другое)"):"нет на макете (соседние слова прочитаны)"):"не найдено: нет на макете либо не прочитано"))).join("")}<br>Текст подтверждён: ${r.state.textConfirmed?'да':'нет'}<br>Условия столбца 2: ${r.state.constraintsConfirmed?'подтверждены':'не подтверждены'}${/окно.*дат/i.test(r.title)?'<br>Окно и цифры даты подтверждены: '+(r.state.windowConfirmed?'да':'нет'):''}</td><td>${esc(r.state.note||'')}</td></tr>`).join('')}</tbody></table>${annotationReport()}${state.sourceDiagnostics?.length?'<h2>Разбор документа требует проверки</h2><p>'+state.sourceDiagnostics.map(esc).join('<br>')+'</p>':''}${state.globalConditions?.length?'<h2>Общие условия документа</h2><p>'+state.globalConditions.map(esc).join('<br>')+'</p>':''}<h2>Извлечённый текст макета</h2><small>Источник: ${esc(state.origin||'Не извлечён')}${state.edited?' · отредактирован вручную':''}</small><pre>${esc(state.actual||'Распознавание не выполнено')}</pre></html>`;const url=URL.createObjectURL(new Blob([html],{type:'text/html;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='Проверка маркировки_'+(state.product||state.category).replace(/[^\p{L}\p{N} ._-]/gu,'')+'.html';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('Отчёт скачан. Его можно открыть и распечатать в PDF.');}
 // Read-only handle for scripted audits of a real browser run (?audit in the URL).
 if(new URLSearchParams(location.search).has('audit'))window.__labelCheckState=state;
 render();loadSample(false);
