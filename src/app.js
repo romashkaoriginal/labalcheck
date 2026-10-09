@@ -197,7 +197,7 @@ function drawPreview(focus=false,section=true){
  if(focus&&section&&box){const target=Math.min((wrap.clientWidth*.72)/(box.w*img.width),(wrap.clientHeight*.6)/(box.h*img.height));state.zoom=Math.max(100,Math.min(500,Math.round(target/fit*100/25)*25));}
  const width=Math.max(1,img.width*fit*state.zoom/100);canvas.style.width=width+'px';
  const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0);
- for(const b of state.matches[state.selected]?.boxes||[]){const x=b.x*img.width,y=b.y*img.height,w=b.w*img.width,h=b.h*img.height;ctx.fillStyle='#2563eb25';ctx.fillRect(x,y,w,h);ctx.strokeStyle='#2563eb';ctx.lineWidth=Math.max(1,img.width/650);ctx.strokeRect(x,y,w,h);}
+ for(const b of state.matches[state.selected]?.boxes||[]){const x=b.x*img.width,y=b.y*img.height,w=b.w*img.width,h=b.h*img.height;ctx.fillStyle='#2563eb10';ctx.fillRect(x,y,w,h);ctx.strokeStyle='#2563eb';ctx.lineWidth=1.25;ctx.strokeRect(x,y,w,h);}
  const height=width*img.height/img.width;
  if(focus){const x=section&&box?box.x+box.w/2:.5,y=section&&box?box.y+box.h/2:.5;wrap.scrollLeft=Math.max(0,width*x-wrap.clientWidth/2);wrap.scrollTop=Math.max(0,height*y-wrap.clientHeight/2);}
  else if(oldWidth){wrap.scrollLeft=Math.max(0,width*centerX-wrap.clientWidth/2);wrap.scrollTop=Math.max(0,height*centerY-wrap.clientHeight/2);}
