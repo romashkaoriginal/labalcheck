@@ -79,7 +79,7 @@ test('engines sure of different readings leave the word uncertain: neither a mat
  const first=match(['Сахар','белый','75','грамм'].map((text,i)=>tok(text,.1+i*.06,95))),second=match(['Сахар','белый','50','грамм'].map((text,i)=>tok(text,.1+i*.06,95,'paddle:0')));
  const fused=fuseOcrMatches(first,second).r;
  assert.equal(fused.exact,false);assert.deepEqual(fused.diff.map(change=>[change.kind,change.expected,change.actual]),[['uncertain','50','75']]);
- const row=evaluate(rule,'Сахар белый 75 грамм',{automatic:{r:fused}})[0];assert.equal(row.comparison.status,'uncertain');assert.equal(row.statusLabel,'Неуверенное OCR');
+ const row=evaluate(rule,'Сахар белый 75 грамм',{automatic:{r:fused}})[0];assert.equal(row.comparison.status,'uncertain');assert.equal(row.statusLabel,'Спорно');
  // When the second engine reads the same different number, the difference stands.
  const agreeing=match(['Сахар','белый','75','грамм'].map((text,i)=>tok(text,.1+i*.06,95,'paddle:0')));
  assert.equal(evaluate(rule,'Сахар белый 75 грамм',{automatic:{r:fuseOcrMatches(first,agreeing).r}})[0].statusLabel,'Проверить число');

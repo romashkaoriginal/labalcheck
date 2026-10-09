@@ -1,0 +1,21 @@
+/* Section list, artwork and evidence share one workspace. */
+.work-grid{grid-template-columns:minmax(270px,320px) minmax(0,1fr);align-items:start}
+.checklist-panel{grid-column:1;grid-row:1 / span 2;position:sticky;top:12px}
+.preview-panel{grid-column:2;grid-row:1;min-width:0}
+.detail-panel{grid-column:2;grid-row:2;margin-top:0;min-width:0}
+.rule-list{max-height:min(70vh,790px)}
+.canvas-wrap{text-align:left;cursor:grab;touch-action:none}
+.canvas-wrap.panning{cursor:grabbing;user-select:none}
+#preview{margin:0;max-width:none}
+.preview-toolbar{flex-wrap:wrap}
+.preview-toolbar .tool:disabled{opacity:.45}
+.detail-panel .panel-heading{flex-wrap:wrap}
+.section-controls{display:flex;align-items:center;gap:8px;margin-left:auto}
+.section-controls>span{font-size:11px;color:#6b7e97;white-space:nowrap}
+.section-controls .button{min-height:34px}
+.measurement-warning{margin:8px 0 12px;padding:10px 12px;background:#fff6df;color:#765600;border-radius:5px;font-size:12px;line-height:1.5}
+.punctuation-note{margin:12px 0;padding:10px 12px;background:#f5f8fd;border:1px solid #e1e8f2;border-radius:5px;color:#526781;font-size:11px;line-height:1.55}
+.punctuation-note p{margin:3px 0 0}
+.punctuation-note ul{margin:6px 0 0;padding-left:18px}
+@media(max-width:1050px){.work-grid{grid-template-columns:minmax(220px,280px) minmax(0,1fr)}.detail-grid{grid-template-columns:1fr}}
+@media(max-width:680px){.work-grid{display:flex;flex-direction:column}.checklist-panel{position:static;order:-1}.work-grid>.panel{width:100%}.rule-list{max-height:320px}.detail-panel .panel-heading{align-items:flex-start}.section-controls{order:3;width:100%;justify-content:space-between}.section-controls .button{font-size:11px;padding:7px 9px}}

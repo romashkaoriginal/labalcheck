@@ -26,7 +26,7 @@ try{
  browser=await chromium.launch({executablePath:chrome,headless:true,args:['--disable-gpu']});
  const page=await browser.newPage(),errors=[];
  page.on('pageerror',error=>errors.push(error.message));
- await page.goto(`http://127.0.0.1:${server.address().port}/`);
+ await page.goto(`http://127.0.0.1:${server.address().port}/?audit`);
  await page.waitForFunction(()=>document.querySelectorAll('button.rule-row').length===17,{},{timeout:30000});
  await page.locator('#recognize').click();
  await page.waitForFunction(()=>{const button=document.querySelector('#recognize');return button&&!button.disabled&&button.textContent.includes('Проверить ещё раз');},{},{timeout:300000});
@@ -36,10 +36,15 @@ try{
  assert.equal(rows.find(row=>row.id==='r13')?.status,'Текст найден');
  // Lines read one by one: both turned lines of the shelf life are found, and dense small print is no longer left unsure.
  assert.equal(rows.find(row=>row.id==='r5')?.status,'Текст найден');
- const unsure=rows.filter(row=>row.status==='Неуверенное OCR').map(row=>row.id);
+ const unsure=rows.filter(row=>row.status==='Спорно').map(row=>row.id);
  assert.ok(unsure.length<=2,`unsure sections: ${unsure.join(', ')}`);
  assert.ok(!rows.some(row=>['Отличие текста','Проверить число'].includes(row.status)),'the sample has no text differences');
  await page.locator('button.rule-row[data-rule="r11"]').click();
+ assert.equal(await page.locator('#preview').evaluate(canvas=>canvas.width),await page.evaluate(()=>window.__labelCheckState.image.width));
+ assert.equal(await page.locator('.section-controls').innerText().then(text=>text.includes('12 / 17')),true);
+ await page.locator('#next-section').click();
+ assert.match(await page.locator('.section-controls').innerText(),/13 \/ 17/);
+ await page.locator('#prev-section').click();
  assert.match(await page.locator('.quantity-review').innerText(),/На макете\s+0,7 л/);
  assert.match(await page.locator('.quantity-review').innerText(),/совпадают с Word/);
  // Size callouts of the technical sheet are read and listed apart from measured sizes.

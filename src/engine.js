@@ -42,6 +42,24 @@ export function compareText(expected,actual){
   const coverage=tokens.length?Math.round(tokens.filter(t=>actualWords.has(t)).length/tokens.length*100):0;
   return {status:coverage===100?'all_words':coverage>0?'partial':'unreadable',coverage,missing};
 }
+// OCR keeps punctuation in its raw reading, while word matching deliberately
+// ignores it. Report visible marks separately without treating an unread dot
+// or comma as a confirmed print error.
+export function comparePunctuation(expected,actual){
+ const parse=text=>[...normalize(dehyphenate(text)).matchAll(/(-?\d+(?:[,.]\d+)?|[\p{L}]+)([.,;:!?-]?)/gu)].map(([,token,mark])=>({token:token.replace(/^(\d+)\.(?=\d)/,'$1,'),mark}));
+ const left=parse(expected),right=parse(actual);
+ if(!left.length||!right.length)return null;
+ const sameWords=left.length===right.length&&left.every((item,i)=>item.token===right[i].token);
+ const differences=[];let checked=0,cursor=0;
+ for(const item of left){
+  const index=right.findIndex((read,i)=>i>=cursor&&read.token===item.token);
+  if(index<0)continue;
+  const read=right[index];cursor=index+1;
+  if(item.mark)checked++;
+  if((item.mark||sameWords)&&item.mark!==read.mark)differences.push({word:item.token,expected:item.mark||'—',actual:read.mark||'—'});
+ }
+ return checked||differences.length?{checked,differences}:null;
+}
 export function requirementsFromSource(source){
  const parsed=parseRequirements(source);source.diagnostics=parsed.diagnostics;source.globalConditions=parsed.globalConditions;return parsed.rules;
 }
@@ -98,7 +116,7 @@ export function evaluate(rules,actual,{volume='0,7',margin=false,review={},autom
   const numericDifference=match?.diff?.some(change=>change.kind==='replace'&&change.confidence>=80&&(/\d/.test(change.expected)&&/\d/.test(change.actual))&&((change.expected.match(/\d+(?:[,.]\d+)*/g)||[]).join('|')!==(change.actual.match(/\d+(?:[,.]\d+)*/g)||[]).join('|')));
   const declaredLow=dimensions.some(x=>x.declared.some(item=>item.level!=='low'&&item.passes===false));
   const notation=match?.exact&&match.notation;
-  const statusLabel=quantityIssue?'Проверить количество':notation?'Другая запись единицы':numericDifference?'Проверить число':dimensions.some(x=>x.estimated&&!x.pass)||declaredLow?'Проверить размеры':comparison.confident?'Отличие текста':dimensions.some(x=>x.contradicted)?'Выноска ≠ замер':dimensions.some(x=>x.borderline)?'Пограничный замер':comparison.status==='uncertain'?'Неуверенное OCR':null;
+  const statusLabel=quantityIssue?'Проверить количество':notation?'Другая запись единицы':numericDifference?'Проверить число':dimensions.some(x=>x.estimated&&!x.pass)||declaredLow?'Проверить размеры':comparison.confident?'Отличие текста':dimensions.some(x=>x.contradicted)?'Выноска ≠ замер':dimensions.some(x=>x.borderline)?'Проверить размер':comparison.status==='uncertain'?'Спорно':null;
   const status=failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':quantityIssue||notation||declaredLow||dimensions.some(x=>x.contradicted||x.estimated&&(!x.pass||x.borderline))?'issue':comparison.status==='found'?'detected':comparison.status==='all_words'?'words':actual&&['partial','unreadable','uncertain'].includes(comparison.status)?'issue':'pending';
   return {...rule,expected,comparison,dimensions,state,status,quantity,date,statusLabel:status==='issue'?statusLabel:null};
  });

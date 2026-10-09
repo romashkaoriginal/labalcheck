@@ -150,7 +150,7 @@ test('statuses tell a confidently read difference, an uncertain reading and a ca
  const extra=row(words(['Напиток','слабоалкогольный','ароматизированный','газированный'],{step:.15}));
  assert.equal(extra.statusLabel,'Отличие текста');assert.equal(extra.comparison.confident,true);
  const weak=row(words(['Напиток','слабоалкогольный','газир0ванный'],{step:.15,confidence:55}));
- assert.equal(weak.statusLabel,'Неуверенное OCR');
+ assert.equal(weak.statusLabel,'Спорно');
  const exact=words(['Напиток','слабоалкогольный','газированный'],{step:.15});
  assert.equal(row(exact).status,'detected');
  assert.equal(row(exact,[{value:1.8,passes:false,level:'high',scope:'section'}]).statusLabel,'Проверить размеры','stated below the minimum');

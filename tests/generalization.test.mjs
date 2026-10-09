@@ -1,9 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {requirementsFromSource,dimensionChecks,evaluate} from '../src/engine.js';
+import {requirementsFromSource,dimensionChecks,evaluate,comparePunctuation} from '../src/engine.js';
 import {inkLineAreas,detectFrames,matchRequirements,wordsFromOcr} from '../src/automatic.js';
 import {pageReadingBox,locatePhrase,refinementLines} from '../src/phrase.js';
 import {quantityReadAreas} from '../src/quantity.js';
+
+test('case and punctuation do not reject matching words; punctuation is shown separately',()=>{
+ const expected='Хранить при 0 °C. После вскрытия — плотно закрытым.';
+ const actual='хранить при 0 °с после вскрытия плотно закрытым';
+ const rule={id:'text',title:'Хранение',text:expected,original:expected,constraint:''};
+ const match=locatePhrase(expected,actual.split(' ').map((text,i)=>({text,confidence:96,pass:'one',box:{x:i*.04,y:.1,w:.035,h:.02}})));
+ assert.equal(match.exact,true);
+ assert.equal(evaluate([rule],actual,{automatic:{text:match}})[0].comparison.status,'found');
+ const punctuation=comparePunctuation(expected,actual);
+ assert.equal(punctuation.differences.length,3);
+ assert.equal(punctuation.differences[0].expected,'.');
+ assert.equal(punctuation.differences[1].expected,'-');
+});
 
 test('permuted and two-column tables use headers, headerless data keeps the first row',()=>{
  const a=requirementsFromSource({tables:[[['Текст этикетки','Условия','Раздел'],['Вино сухое','не менее 2 мм','Название']]]});
@@ -71,7 +84,7 @@ test('source raster resolution stays honest after upscaling and a near threshold
  const rule={id:'r',title:'Имя',text:'Водка',original:'Водка',constraint:'не менее 0,8 мм'};
  const words=[{text:'Водка',confidence:95,box:{x:.1,y:.1,w:.1,h:.02},sourcePixelMm:.06,mmPerPixel:.015,glyphs:[{text:'В',height:.84},{text:'о',height:.84}]}];
  const automatic=matchRequirements([rule],words,'0,7',false,{x:0,y:0,w:1,h:1},true),row=evaluate([rule],'Водка',{automatic})[0];
- assert.equal(row.dimensions[0].meta.pixelStep,.06);assert.equal(row.dimensions[0].borderline,true);assert.equal(row.statusLabel,'Пограничный замер');
+ assert.equal(row.dimensions[0].meta.pixelStep,.06);assert.equal(row.dimensions[0].borderline,true);assert.equal(row.statusLabel,'Проверить размер');
 });
 
 test('a low-confidence number cannot become exact merely by matching the requirements',()=>{

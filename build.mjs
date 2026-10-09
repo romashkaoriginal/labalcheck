@@ -1,7 +1,7 @@
 import { build } from 'esbuild';
 import { cpSync, mkdirSync, existsSync } from 'node:fs';
 mkdirSync('dist',{recursive:true});
-for(const file of ['index.html','styles.css','readability.css','favicon.svg']) cpSync('src/'+file,'dist/'+file);
+for(const file of ['index.html','styles.css','readability.css','review-workspace.css','favicon.svg']) cpSync('src/'+file,'dist/'+file);
 cpSync('assets','dist/assets',{recursive:true});
 mkdirSync('dist/vendor',{recursive:true});
 cpSync('node_modules/pdfjs-dist/build/pdf.worker.min.mjs','dist/vendor/pdf.worker.min.mjs');

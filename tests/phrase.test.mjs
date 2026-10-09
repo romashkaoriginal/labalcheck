@@ -55,7 +55,7 @@ test('sample maker, warning and supplemental text do not report weak OCR glyphs 
  const rules=fixture.rules.filter(rule=>['r3','r7','r16'].includes(rule.id));
  const matches=matchRequirements(rules,fixture.words,'0,7',false,fixture.label,true);
  const rows=evaluate(rules,fixture.words.map(w=>w.text).join(' '),{automatic:matches});
- for(const row of rows){assert.equal(row.comparison.status,'uncertain',row.title);assert.equal(row.statusLabel,'Неуверенное OCR');assert.equal(row.status,'issue');}
+ for(const row of rows){assert.equal(row.comparison.status,'uncertain',row.title);assert.equal(row.statusLabel,'Спорно');assert.equal(row.status,'issue');}
  assert.equal(matches.r3.method,'sections');
  assert.ok(matches.r3.recognizedText.startsWith('СТРАНА ПРОИСХОЖДЕНИЯ'));
  assert.doesNotMatch(matches.r3.recognizedText.slice(0,60),/КДЖ|ККАЛ|930/);
