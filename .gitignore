@@ -5,3 +5,10 @@ tmp/
 *.tar.gz
 *.traineddata
 *.log
+
+# Настольный эксперимент: зависимости, сборка, модели и результаты прогонов
+desktop/node_modules/
+desktop/build/
+desktop/out/
+desktop/bench/out/
+desktop/models/*/

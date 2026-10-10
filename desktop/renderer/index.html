@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Контроль маркировки</title>
+<link rel="stylesheet" href="./host.css">
+</head>
+<body>
+<header class="bar">
+ <div class="brand"><strong>Контроль маркировки</strong><span>настольная версия · файлы не покидают компьютер</span></div>
+ <nav class="tabs" role="tablist">
+  <button role="tab" id="tab-app" aria-selected="true">Проверка</button>
+  <button role="tab" id="tab-compare" aria-selected="false">Сравнение с веб-версией</button>
+  <button role="tab" id="tab-web" aria-selected="false">Веб-версия как есть</button>
+ </nav>
+ <label class="engines">Чтение
+  <select id="engines">
+   <option value="local-tesseract">строгое: локальный движок, второй — Tesseract.js</option>
+   <option value="tesseract-local">спокойное: Tesseract.js, второй — локальный движок</option>
+  </select>
+ </label>
+ <details class="both">
+  <summary>Один файл — оба метода</summary>
+  <div class="both-panel">
+   <label class="pick" id="pick-docx"><input type="file" id="docx" accept=".docx,.txt" hidden><span class="pick-title">Требования</span><span class="pick-name" id="docx-name">DOCX или TXT</span></label>
+   <label class="pick" id="pick-art"><input type="file" id="art" accept=".pdf,image/png,image/jpeg,image/webp" hidden><span class="pick-title">Макет</span><span class="pick-name" id="art-name">PDF или изображение</span></label>
+   <button id="run" disabled>Проверить</button>
+   <button id="run-compare" class="primary" disabled>Проверить и сравнить</button>
+   <button id="cancel" hidden>Отменить</button>
+  </div>
+ </details>
+</header>
+<div id="notice" class="notice" hidden></div>
+<main id="compare" class="compare" hidden>
+ <section class="sheet">
+  <div class="sheet-tools"><span class="legend"><i class="swatch best"></i>настольный режим<i class="swatch web"></i>веб-версия</span><button id="fit">Весь лист</button></div>
+  <div class="sheet-view" id="sheet-view"><canvas id="sheet"></canvas><p class="empty" id="sheet-empty">Откройте «Один файл — оба метода», выберите требования и макет и нажмите «Проверить и сравнить». Один и тот же файл пройдёт через настольный режим и через веб-версию; результаты встанут рядом.</p></div>
+ </section>
+ <section class="side">
+  <div class="methods" id="methods"></div>
+  <div class="filter"><label><input type="checkbox" id="only-different"> только разделы, где методы расходятся</label><span id="counts"></span></div>
+  <div class="sections" id="sections"></div>
+  <div class="detail" id="detail"></div>
+ </section>
+</main>
+<iframe id="app" class="site" title="Проверка"></iframe>
+<iframe id="web" class="site parked" title="Веб-версия как есть" src="../web/index.html?audit"></iframe>
+<script type="module" src="./host.js"></script>
+</body>
+</html>

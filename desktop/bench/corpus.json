@@ -1,0 +1,8 @@
+{
+ "note": "Листы для сравнения методов. «repo:» — файл репозитория; «corpus:» — файл в каталоге LABEL_CORPUS_DIR (по умолчанию «Загрузки» пользователя): макеты заказчиков в репозиторий не кладутся.",
+ "sheets": [
+  {"id": "sjabry", "title": "Сябры. Чистая 0,7 л", "artwork": "repo:assets/sample.pdf", "requirements": "repo:assets/sample.docx", "volume": "0,7", "truth": "truth/sjabry.json"},
+  {"id": "rose", "title": "Сан Ремино. Розе 0,75 л", "artwork": "corpus:55160-2_SAN REMINO Rose 075_kontr_r (5).jpg", "requirements": "corpus:Информация на Сан Ремино. Розе.docx", "volume": "0,75", "truth": "truth/rose.json"},
+  {"id": "dolce", "title": "Сан Ремино. Дольче 0,75 л", "artwork": "corpus:56621-1_SAN REMINO DOLCE 075_kontra_r.jpg", "requirements": "corpus:Информация на Сан Ремино. Дольче (2026).docx", "volume": "0,75", "truth": "truth/dolce.json"}
+ ]
+}

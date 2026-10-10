@@ -1,0 +1,25 @@
+{
+  "name": "label-check-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Experimental Windows shell for label-check: the current browser method beside a local OCR process",
+  "type": "module",
+  "main": "src/main.mjs",
+  "scripts": {
+    "models": "node scripts/fetch-models.mjs",
+    "build": "node build.mjs",
+    "start": "node build.mjs && electron .",
+    "bench": "node build.mjs && node bench/run.mjs",
+    "grid": "node bench/grid.mjs",
+    "score": "node bench/score.mjs --out ../docs/desktop-spike/results-tables.md",
+    "test": "node --test test/*.test.mjs",
+    "package": "node build.mjs && electron-packager . LabelCheckDesktop --platform=win32 --arch=x64 --out=out --overwrite --no-asar --ignore=\"bench.out\" --ignore=\"^.(out|test)$\" --ignore=\"^.(out|test)[^a-z]\""
+  },
+  "dependencies": {
+    "onnxruntime-node": "1.30.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.7.0"
+  }
+}

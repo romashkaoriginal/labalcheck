@@ -1,0 +1,36 @@
+{
+ "source": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/<name>_onnx_infer.tar",
+ "license": "Apache-2.0 (PaddlePaddle/PaddleOCR)",
+ "models": [
+  {
+   "name": "PP-OCRv5_mobile_det",
+   "role": "det",
+   "megabytes": 4.8,
+   "sha256": "781056046c9ed77a15c94681605db6a0f62317c2e9cce6931c71da2478d4bc30"
+  },
+  {
+   "name": "PP-OCRv5_server_det",
+   "role": "det",
+   "megabytes": 88,
+   "sha256": "cd28389ed2c11dfe02d6a9847ec95ca6153a51bf38bc1c4e2521c1f548188f58"
+  },
+  {
+   "name": "PP-OCRv6_medium_det",
+   "role": "det",
+   "megabytes": 62,
+   "sha256": "c5adb0b15de1b1838934eba1dd72e7529e7d80132216c6ee6d26eba6fa054fcf"
+  },
+  {
+   "name": "cyrillic_PP-OCRv5_mobile_rec",
+   "role": "rec",
+   "megabytes": 8.1,
+   "sha256": "3f5657de92e90edeb63483424aadcf19caee571b45d35af75a163a2ca576a260"
+  },
+  {
+   "name": "eslav_PP-OCRv5_mobile_rec",
+   "role": "rec",
+   "megabytes": 7.9,
+   "sha256": "49e3d48598e6aed05eaa7c9b0a759ab4261d9021dff2d71849d4f1c95b79d30b"
+  }
+ ]
+}
