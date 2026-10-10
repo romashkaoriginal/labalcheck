@@ -211,6 +211,25 @@ function align(target,candidate,pool=null){
    if(n&&sameLine(w,n)&&w.a1<=n.a1)return true;
    return !!p&&!!n&&w.c0>=p.c0&&w.c1<=n.c1&&!sameLine(p,n);
   };
+  // A caption of a sign standing beside a column ("FOR", "GL" under a
+  // recycling loop) is on the baseline of a line of the phrase and is read
+  // with it. It is no insertion: it stands outside the column the phrase is
+  // set in — beyond the end of its longest line, or before the start of its
+  // lines — and apart from the line by more than a word space. A word really
+  // added to a line follows at a word space, and stays a difference.
+  const column={from:Math.min(...found.map(w=>span(w).a0)),to:Math.max(...found.map(w=>span(w).a1))};
+  const captionBeside=(parts,before,after)=>{
+   // A reading that gives a whole line as one word has no place of its own for a word inside it.
+   // Only what was read with confidence: a weak stray reading is already no
+   // more than an uncertain place and must not change which reading is chosen.
+   if(!parts.length||parts.some(word=>found.includes(word)||(word.confidence??0)<75))return false;
+   const spans=parts.map(span),first=Math.min(...spans.map(s=>s.a0)),last=Math.max(...spans.map(s=>s.a1)),p=before&&span(before),n=after&&span(after);
+   // After the last word of a line, the phrase going on below.
+   if(p&&spans.every(s=>sameLine(s,p))&&(!n||!sameLine(n,p))){const height=p.c1-p.c0;if(first>column.to+height*.5&&first-p.a1>height*1.2)return true;}
+   // Before the first word of a line, the phrase having come from above.
+   if(n&&spans.every(s=>sameLine(s,n))&&(!p||!sameLine(p,n))){const height=n.c1-n.c0;if(last<column.from-height*.5&&n.a0-last>height*1.2)return true;}
+   return false;
+  };
   for(let from=0;from<operations.length;from++){
    if(operations[from].kind!=='extra')continue;let to=from;while(operations[to+1]?.kind==='extra')to++;
    let b=from-1,a=to+1;while(b>=0&&operations[b].kind!=='same')b--;while(a<operations.length&&operations[a].kind!=='same')a++;
@@ -219,7 +238,7 @@ function align(target,candidate,pool=null){
    // to the word after them, belong to the line wherever it ends.
    const chained=(start,direction)=>{if(!start)return 0;let last=span(start),n=0;for(const word of [...parts].sort((p,q)=>direction*(span(p).a0-span(q).a0))){const w=span(word),gap=direction>0?w.a0-last.a1:last.a0-w.a1;if(!sameLine(w,last)||gap>(last.c1-last.c0)*3||gap<-(w.a1-w.a0))break;last=w;n++;}return n;};
    const inFlow=Math.max(chained(before,1),chained(after,-1),parts.filter(w=>within(w)&&flowing(w,before,after)).length);
-   if(inFlow<parts.length*.5){parts.forEach(w=>aside.add(w));operations.splice(from,run.length);from--;}else from=to;
+   if(inFlow<parts.length*.5||captionBeside(parts,before,after)){parts.forEach(w=>aside.add(w));operations.splice(from,run.length);from--;}else from=to;
   }
  }
  // A required word unread and another word printed in its place are one
@@ -435,4 +454,65 @@ export function settleEdges(match,probes,page,words=[]){
   mark(match);
  }
  return match;
+}
+
+// A phrase is looked for inside everything printed on the label, so what is
+// printed around it is not compared: "не" set right before a required phrase
+// would go unnoticed. After all phrases are found, the word standing right
+// before the first word of each and right after its last word is looked at —
+// on the same line at a word space, or, where the phrase begins or ends a line
+// of its own column, at the end of the line above or the start of the line
+// below. If that word belongs to no requirement, continues the same sentence
+// and was read with confidence, the phrase is no longer taken as found whole:
+// the word is shown beside it for a person to judge. Nothing is asserted about
+// the print — the section becomes uncertain, not different.
+// `signs`: captions of signs the requirements name ("ЕАС", "GL") — graphics the
+// comparison of texts leaves to a person; such a caption beside a phrase is
+// accounted for.
+export function settleNeighbours(matches,words,page,signs=[]){
+ const named=new Set(signs.map(fold));
+ const frame=(word,turn)=>{const b={x:word.box.x*page.width,y:word.box.y*page.height,w:word.box.w*page.width,h:word.box.h*page.height};return turn===90?{c0:b.x,c1:b.x+b.w,a0:-(b.y+b.h),a1:-b.y}:turn===270?{c0:-(b.x+b.w),c1:-b.x,a0:b.y,a1:b.y+b.h}:turn===180?{c0:-(b.y+b.h),c1:-b.y,a0:-(b.x+b.w),a1:-b.x}:{c0:b.y,c1:b.y+b.h,a0:b.x,a1:b.x+b.w};};
+ const sameLine=(p,q)=>Math.min(p.c1,q.c1)-Math.max(p.c0,q.c0)>=Math.min(p.c1-p.c0,q.c1-q.c0)*.4;
+ const shared=(a,b)=>Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x))*Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));
+ const worded=word=>phraseTokens(word.text).some(token=>token.length>=2||/\d/.test(token));
+ const readable=words.filter(word=>word.box&&word.pass!=='barcode'&&word.text?.trim());
+ const taken=Object.values(matches).flatMap(match=>[...(match?.words||[]),...(match?.ops||[]).flatMap(op=>op.words||[])]).filter(word=>word?.box);
+ const closes=/[.;:!?]["»”)]*$/u;
+ for(const match of Object.values(matches)){
+  if(!match?.exact||!match.ops?.length||['quantity','barcode','manual'].includes(match.method))continue;
+  const same=match.ops.filter(op=>op.kind==='same'&&op.words?.length&&op.words.every(word=>word.box));if(!same.length)continue;
+  const first=same[0].words[0],last=same.at(-1).words.at(-1),turn=first.rotation||0,own=same.flatMap(op=>op.words),spans=own.map(word=>frame(word,turn));
+  const column={from:Math.min(...spans.map(s=>s.a0)),to:Math.max(...spans.map(s=>s.a1))},lines=spans.some(s=>!sameLine(s,spans[0]));
+  for(const [side,anchor] of [['before',first],['after',last]]){
+   const A=frame(anchor,turn),h=A.c1-A.c0;
+   const pool=readable.filter(word=>(word.rotation||0)===turn&&(word.confidence??0)>=75&&worded(word)&&!own.includes(word)).map(word=>({word,f:frame(word,turn)})).filter(({f})=>f.c1-f.c0>h*.5&&f.c1-f.c0<h*1.6);
+   const along=pool.filter(({f})=>sameLine(f,A)&&(side==='before'?f.a1<=A.a0+h*.3:f.a0>=A.a1-h*.3));
+   // Where the phrase runs over several lines, its column is known: a word on
+   // the same line but outside the column (a neighbouring column of text, a
+   // sign) is no neighbour of the phrase.
+   const outside=lines&&(side==='before'?A.a0<=column.from+h:A.a1>=column.to-h);
+   // At a word space on the same line.
+   let near=outside?null:along.filter(({f})=>(side==='before'?A.a0-f.a1:f.a0-A.a1)<h).sort((p,q)=>side==='before'?q.f.a1-p.f.a1:p.f.a0-q.f.a0)[0];
+   // Nothing else on that side of the line within the column, and the phrase runs over several lines: the neighbouring line of the column.
+   if(!near&&lines&&(outside||!along.length)&&(side==='before'?A.a0<=column.from+h:true)){
+    const beside=pool.filter(({f})=>(side==='before'?f.c1<=A.c0+h*.3&&A.c0-f.c1<h*1.2:f.c0>=A.c1-h*.3&&f.c0-A.c1<h*1.2)&&f.a0>=column.from-h&&f.a1<=column.to+h);
+    near=beside.sort((p,q)=>side==='before'?q.f.a1-p.f.a1:p.f.a0-q.f.a0)[0];
+    if(near&&side==='after'&&near.f.a0>column.from+h)near=null; // the line below must begin at the start of the column
+   }
+   if(!near)continue;
+   const box=near.word.box,area=box.w*box.h;
+   // Accounted for: part of this or another requirement, or another reading of the phrase's own words.
+   if(taken.some(word=>shared(word.box,box)>Math.min(area,word.box.w*word.box.h)*.3))continue;
+   if(phraseTokens(near.word.text).every(token=>named.has(fold(token))))continue;
+   // Another sentence: a full stop, colon or semicolon read between the two.
+   const edge=side==='before'?box:anchor.box;
+   if(readable.some(word=>(word.rotation||0)===turn&&closes.test(word.text.trim())&&shared(word.box,edge)>Math.min(edge.w*edge.h,word.box.w*word.box.h)*.5&&frame(word,turn).a1<=frame({box:edge},turn).a1+h*.5))continue;
+   // Read surely: by one pass with high confidence, or the same by two.
+   const tokens=phraseTokens(near.word.text).map(fold).join(' ');
+   if(!((near.word.confidence??0)>=90||readable.some(word=>word.pass!==near.word.pass&&(word.rotation||0)===turn&&shared(word.box,box)>Math.min(area,word.box.w*word.box.h)*.5&&phraseTokens(word.text).map(fold).join(' ')===tokens)))continue;
+   match.exact=false;match.beside=[...(match.beside||[]),{side,text:near.word.text.trim(),box}];
+   match.diff=[...(match.diff||[]),{kind:'uncertain',expected:'',actual:`${side==='before'?'перед фразой':'после фразы'} напечатано: ${near.word.text.trim()}`,confidence:0,beside:side}];
+  }
+ }
+ return matches;
 }

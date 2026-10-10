@@ -1,5 +1,5 @@
 import {variantText, dimensionChecks, scopeIndex, normalize} from './engine.js';
-import {locatePhrase,orderedTextCandidates,fragmentsOf,settleEdges} from './phrase.js';
+import {locatePhrase,orderedTextCandidates,fragmentsOf,settleEdges,settleNeighbours,phraseTokens} from './phrase.js';
 import {fuseOcrMatches} from './ocr-fusion.js';
 import {isQuantityRule,quantities,expectedQuantity,quantityComparison,quantityEvidence,dateEvidence,glyphHeight,insideLabel,equivalentNotations} from './quantity.js';
 
@@ -348,6 +348,9 @@ export function matchRequirements(rules,words,volume,margin,label,hasContour) {
 export function assess({rules,words,secondaryWords=[],volume,margin=false,label,hasContour,edgeProbes=[],page=null}){
  const primary=matchRequirements(rules,words,volume,margin,label,hasContour);
  const matches=hasContour&&secondaryWords.length?fuseOcrMatches(primary,matchRequirements(rules,secondaryWords,volume,margin,label,hasContour)):primary;
- if(edgeProbes.length&&page){const inside=hasContour&&label?words.filter(word=>insideLabel(word.box,label)):words;for(const match of Object.values(matches))settleEdges(match,edgeProbes,page,inside);}
+ const inside=hasContour&&label?words.filter(word=>insideLabel(word.box,label)):words;
+ if(edgeProbes.length&&page)for(const match of Object.values(matches))settleEdges(match,edgeProbes,page,inside);
+ // What is printed right beside a found phrase and belongs to no requirement.
+ if(page)settleNeighbours(matches,inside,page,rules.filter(rule=>/знаки|мебиус|рюмка/i.test(rule.title)).flatMap(rule=>phraseTokens(rule.text||'')));
  return matches;
 }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {locatePhrase,phraseTokens,refinementAreas,orderedTextCandidates} from '../src/phrase.js';
 import {evaluate} from '../src/engine.js';
-import {matchRequirements} from '../src/automatic.js';
+import {matchRequirements,assess} from '../src/automatic.js';
 import {readFileSync} from 'node:fs';
 import {gunzipSync} from 'node:zlib';
 
@@ -211,4 +211,37 @@ test('words missing at the edge are absent only when their place was looked at a
  const place=edgePlaces(locatePhrase('Дата розлива номер партии',turned),sheet)[0];
  assert.equal(place.rotation,90);assert.ok(place.areas[0].y+place.areas[0].h<=.731&&Math.abs(place.areas[0].x-.5)<.01,'above the last word, in its column');
  assert.ok(place.areas[1].x>.52,'the next line stands to the right');
+});
+
+test('a caption of a sign beside a column is not a word inserted into the phrase',()=>{
+ // Two lines of one phrase. "GL" (the caption under a recycling loop) stands on the baseline of the first line,
+ // beyond the end of the column and apart from the line by more than a word space, yet near enough to be read with it.
+ const first=line('Алкоголь противопоказан детям и подросткам',.1,.1),second=line('до 18 лет',.1,.14),caption={text:'GL',confidence:96,pass:'one',box:{x:.5,y:.1,w:.03,h:.025}};
+ const beside=locatePhrase('Алкоголь противопоказан детям и подросткам до 18 лет',[...first,caption,...second]);
+ assert.equal(beside.exact,true);assert.ok(!beside.words.includes(caption));
+ // A word added at the end of a line at a word space is a difference, even when that line is the longest of the phrase.
+ const longer=line('Хранить в сухом прохладном месте обязательно',.1,.1),next=line('при температуре',.1,.14);
+ const added=locatePhrase('Хранить в сухом прохладном месте при температуре',[...longer,...next]);
+ assert.equal(added.exact,false);assert.deepEqual(added.diff.map(change=>[change.kind,change.actual]),[['extra','обязательно']]);
+});
+
+test('a word printed right beside a found phrase and asked for by no requirement makes the section uncertain',()=>{
+ const rule=(id,title,text)=>({id,title,text,original:text,constraint:String()}),page={width:1000,height:1000},label={x:0,y:0,w:1,h:1};
+ const judge=(rules,words)=>assess({rules,words,volume:'0,7',label,hasContour:true,page});
+ const contains=rule('r0','Состав','содержит сахар и воду');
+ // "не" at a word space before the phrase, on its line.
+ const negated=judge([contains],line('не содержит сахар и воду',.1,.1)).r0;
+ assert.equal(negated.exact,false);assert.equal(negated.beside[0].side,'before');assert.equal(negated.beside[0].text,'не');
+ assert.deepEqual(negated.diff.map(change=>change.kind),['uncertain']);
+ // The same word asked for by another requirement is accounted for.
+ const both=judge([contains,rule('r1','Название','Напиток не')],line('Напиток не содержит сахар и воду',.1,.1));
+ assert.equal(both.r0.exact,true);assert.equal(both.r0.beside,undefined);
+ // A full stop between them: another sentence.
+ assert.equal(judge([contains],line('Хранить. содержит сахар и воду',.1,.1)).r0.exact,true);
+ // After the phrase: a word that continues it.
+ const longer=judge([contains],line('содержит сахар и воду питьевую',.1,.1)).r0;
+ assert.equal(longer.exact,false);assert.equal(longer.beside[0].side,'after');
+ // Far from the phrase on its line (another column): no neighbour.
+ const far=[...line('содержит сахар и воду',.3,.1),{text:'Ароматика',confidence:96,pass:'one',box:{x:.05,y:.1,w:.1,h:.025}}];
+ assert.equal(judge([contains],far).r0.exact,true);
 });
