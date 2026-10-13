@@ -102,9 +102,10 @@ export function evaluate(rules,actual,{volume='0,7',margin=false,review={},autom
  return rules.map(rule=>{const expected=variantText(rule,volume);const state=review[rule.id]||{};let comparison=expected==='-'?{status:'na',coverage:0}:compareText(expected,actual);
   if(/знаки|мебиус|рюмка/.test(rule.title.toLowerCase())||!expected)comparison={status:'manual',coverage:0};
   const dimensions=dimensionChecks(rule,margin).map((x,i)=>{const manual=Number.isFinite(state.dimensions?.[i]),value=manual?state.dimensions[i]:automatic[rule.id]?.dimensions?.[i],meta=manual?null:automatic[rule.id]?.measurementMeta?.[i],borderline=Number.isFinite(value)&&meta?.pixelStep>0&&Math.abs(value-x.min)<=meta.pixelStep*2;const declared=automatic[rule.id]?.declared?.[i]||[];return {...x,value,estimated:!manual&&Number.isFinite(value),pass:Number.isFinite(value)&&value>=x.min,borderline,meta,declared,contradicted:!manual&&declared.some(item=>item.level!=='low'&&item.raster?.agrees===false),formula:automatic[rule.id]?.areaFormula?.[i]||null,reason:manual?'':automatic[rule.id]?.measurementNotes?.[i]};});
+  const statusDimensions=dimensions.filter(d=>!isTextHeightDimension(d));
   const textConfirmed=state.textConfirmed===true;
-  const failed=state.rejected===true||dimensions.some(x=>!x.estimated&&Number.isFinite(x.value)&&!x.pass);
-  const complete=textConfirmed&&dimensions.every(x=>x.pass&&!x.estimated)&&(!rule.constraint||state.constraintsConfirmed)&&(!/окно.*дат/i.test(rule.title)||state.windowConfirmed);
+  const failed=state.rejected===true||statusDimensions.some(x=>!x.estimated&&Number.isFinite(x.value)&&!x.pass);
+  const complete=textConfirmed&&statusDimensions.every(x=>x.pass&&!x.estimated)&&(!rule.constraint||state.constraintsConfirmed)&&(!/окно.*дат/i.test(rule.title)||state.windowConfirmed);
   const exempt=!expected.trim()&&state.notApplicable&&state.note?.trim();
   const match=automatic[rule.id];
   if(match?.scope==='label'&&expected&&expected!=='-')comparison=compareText(expected,match.words.map(word=>word.text).join(' '));
@@ -114,11 +115,16 @@ export function evaluate(rules,actual,{volume='0,7',margin=false,review={},autom
   const quantity=match?.quantity,date=match?.date;
   const quantityIssue=quantity&&quantity.status!=='match';
   const numericDifference=match?.diff?.some(change=>change.kind==='replace'&&change.confidence>=80&&(/\d/.test(change.expected)&&/\d/.test(change.actual))&&((change.expected.match(/\d+(?:[,.]\d+)*/g)||[]).join('|')!==(change.actual.match(/\d+(?:[,.]\d+)*/g)||[]).join('|')));
-  const declaredLow=dimensions.some(x=>x.declared.some(item=>item.level!=='low'&&item.passes===false));
+  const declaredLow=statusDimensions.some(x=>x.declared.some(item=>item.level!=='low'&&item.passes===false));
   const notation=match?.exact&&match.notation;
-  const statusLabel=quantityIssue?'Проверить количество':notation?'Другая запись единицы':numericDifference?'Проверить число':dimensions.some(x=>x.estimated&&!x.pass)||declaredLow?'Проверить размеры':comparison.confident?'Отличие текста':dimensions.some(x=>x.contradicted)?'Выноска ≠ замер':dimensions.some(x=>x.borderline)?'Проверить размер':comparison.status==='uncertain'?'Спорно':null;
-  const status=failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':quantityIssue||notation||declaredLow||dimensions.some(x=>x.contradicted||x.estimated&&(!x.pass||x.borderline))?'issue':comparison.status==='found'?'detected':comparison.status==='all_words'?'words':actual&&['partial','unreadable','uncertain'].includes(comparison.status)?'issue':'pending';
+  const statusLabel=quantityIssue?'Проверить количество':notation?'Другая запись единицы':numericDifference?'Проверить число':statusDimensions.some(x=>x.estimated&&!x.pass)||declaredLow?'Проверить размеры':comparison.confident?'Отличие текста':statusDimensions.some(x=>x.contradicted)?'Выноска ≠ замер':statusDimensions.some(x=>x.borderline)?'Проверить размер':comparison.status==='uncertain'?'Спорно':null;
+  const status=failed?'error':comparison.status==='na'||exempt?'na':complete?'pass':quantityIssue||notation||declaredLow||statusDimensions.some(x=>x.contradicted||x.estimated&&(!x.pass||x.borderline))?'issue':comparison.status==='found'?'detected':comparison.status==='all_words'?'words':actual&&['partial','unreadable','uncertain'].includes(comparison.status)?'issue':'pending';
   return {...rule,expected,comparison,dimensions,state,status,quantity,date,statusLabel:status==='issue'?statusLabel:null};
  });
+}
+export function isTextHeightDimension(d){
+ if(d?.unit!=='мм'||/еас/i.test(d.label||''))return false;
+ return ['partitioned_letters','quantity_label','quantity','date_label','date_digits'].includes(d.target)
+  ||d.target==='letters'&&/высот[аы]\s+букв/i.test(d.label||'');
 }
 export function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[x]));}
